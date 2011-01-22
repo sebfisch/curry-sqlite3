@@ -33,7 +33,7 @@ Compared with my previous work on this topic this module is far less
 ambitious: instead of implementing arbitrary persistent predicates and
 their operations, it only provides the interface of the `KeyDatabase`
 module (compare with the interface of [`Dynamic`] and [`Database`] to
-see what's missing) and database queries are not handles lazily but
+see what's missing) and database queries are not handled lazily but
 all results are queried immediately. The latter point is not unusual
 for database libraries and no severe restriction unless large query
 results should be processed incrementally.
