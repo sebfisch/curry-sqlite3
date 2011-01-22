@@ -107,6 +107,8 @@ module comes with tests that can be executed by running
 
     # pakcs -1 -r tests.curry
 
-in the directory where this library and the test file reside.
+in the directory where this library and the test file reside. You can generate HTML documentation for the module by calling:
+
+    # currydoc --html doc KeyDatabaseSQLite3.curry
 
 [PAKCS]: http://www.informatik.uni-kiel.de/~pakcs/download/
