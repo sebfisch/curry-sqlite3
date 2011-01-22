@@ -2,3 +2,5 @@
 .curry/
 doc
 test.db
+bugs.curry
+hello.curry
