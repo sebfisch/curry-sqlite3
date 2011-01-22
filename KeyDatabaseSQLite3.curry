@@ -275,7 +275,7 @@ getDBInfo keyPred key =
   transformQ (readQTerm . headOrExit) .
     selectRows keyPred "info" $ "where key = " ++ show key
  where
-  headOrExit []    = error $ "no info for key " ++ show key
+  headOrExit []    = error $ "getDBInfo: no info for key " ++ show key
   headOrExit (x:_) = x
 
 --- Queries the information stored under the given keys.
@@ -287,7 +287,7 @@ getDBInfos keyPred keys =
   sortByIndexInGivenList rows =
     let keyInfos = map readKeyInfo rows
         addKeyInfo key infos =
-          maybe (error $ "no info for key " ++ show key)
+          maybe (error $ "getDBInfos: no info for key " ++ show key)
                 (\info -> info : infos)
                 (lookup key keyInfos)
      in foldr addKeyInfo [] keys
@@ -295,23 +295,36 @@ getDBInfos keyPred keys =
 intercalate :: [a] -> [[a]] -> [a]
 intercalate l = concat . intersperse l
 
---- Deletes the information stored under the given key.
+--- Deletes the information stored under the given key. If the given
+--- key does not exist this transaction is silently ignored and no
+--- error is raised.
 deleteDBEntry :: KeyPred _ -> Key -> Transaction ()
 deleteDBEntry keyPred key =
   modify keyPred "delete from" $ "where key = " ++ show key
 
---- Deletes the information stored under the given keys.
+--- Deletes the information stored under the given keys. No error is
+--- raised if (some of) the keys do not exist.
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
     "where key in (" ++ intercalate "," (map show keys) ++ ")"
 
---- Updates the information stored under the given key.
+--- Updates the information stored under the given key. The
+--- transaction is aborted with a <code>KeyNotExistsError</code> if
+--- the given key is not present in the database.
 updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
+  errorUnlessKeyExists keyPred key ("updateDBEntry: " ++ show key) |>>
   modify keyPred "update" $
     "set info = " ++ quote (showQTerm info) ++
-    " where key = " ++ show key
+    " where key = " ++ show key)
+
+errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
+errorUnlessKeyExists keyPred key msg =
+  getDB (existsDBKey keyPred key) |>>= \exists ->
+  if not exists
+    then errorT $ TError KeyNotExistsError msg
+    else doneT
 
 quote :: String -> String
 quote s = "\"" ++ concatMap quoteChar s ++ "\""
