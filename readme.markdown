@@ -38,6 +38,9 @@ all results are queried immediately. The latter point is not unusual
 for database libraries and no severe restriction unless large query
 results should be processed incrementally.
 
+[`Dynamic`]: http://www.informatik.uni-kiel.de/~pakcs/lib/CDOC/Dynamic.html
+[`Database`]: http://www.informatik.uni-kiel.de/~pakcs/lib/CDOC/Database.html
+
 The following program shows how to use this library.
 
     import KeyDatabaseSQLite3
