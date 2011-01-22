@@ -40,18 +40,18 @@ results should be processed incrementally.
 
 The following program shows how to use this library.
 
-~~~
-import KeyDatabaseSQLite3
-
-hello :: Int -> String -> Dynamic
-hello = persistentSQLite3 "hello.db" "hello"
-
-main :: IO ()
-main = do ensureDBFor hello
-          let info = "Hello, echo!"
-          res <- runJustT (newDBEntry hello info |>>= getDB . getDBInfo hello)
-          putStrLn res
-~~~
+    import KeyDatabaseSQLite3
+    
+    hello :: Int -> String -> Dynamic
+    hello = persistentSQLite3 "hello.db" "hello"
+    
+    main :: IO ()
+    main = do
+        ensureDBFor hello
+        let info = "Hello, echo!"
+        res <- runJustT (newDBEntry hello info |>>= getDB . getDBInfo hello)
+        putStrLn res
+        closeDBHandles
 
 Compared with using `KeyDatabase` there are three main differences:
 
@@ -91,7 +91,7 @@ stored in the database.
     sqlite> select * from hello;
     1|"Hello, echo!"
     2|"Hello, echo!"
-   sqlite> .q
+    sqlite> .q
 
 The value is stored twice under different keys, because we have
 executed `main` twice.
