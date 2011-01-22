@@ -58,6 +58,7 @@ import Global       ( Global, GlobalSpec(..), global, readGlobal, writeGlobal )
 import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose )
 import IOExts       ( connectToCommand )
 import List         ( intersperse, insertBy )
+import Maybe        ( mapMaybe )
 import ReadNumeric  ( readInt )
 import ReadShowTerm ( readQTerm, showQTerm )
 import Unsafe       ( unsafePerformIO ) -- create DB and table on first access
@@ -242,37 +243,46 @@ persistentSQLite3 db table _ _ = unsafePerformIO $
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
 existsDBKey keyPred key =
-  transformQ (0/=) . Query . selectWhereCount keyPred $ "key = " ++ show key
+  transformQ (0/=) . selectInt keyPred "count(*)" $ "where key = " ++ show key
 
 --- Returns a list of all stored keys. Do not use this function unless
 --- the database is small.
 allDBKeys :: KeyPred _ -> Query [Key]
-allDBKeys keyPred = transformQ (map readIntOrExit) $ select keyPred "key"
+allDBKeys keyPred =
+  transformQ (map readIntOrExit) $ selectRows keyPred "key" ""
 
 --- Returns a list of all info parts of stored entries. Do not use this
 --- function unless the database is small.
 allDBInfos :: KeyPred a -> Query [a]
-allDBInfos keyPred = transformQ (map readQTerm) $ select keyPred "info"
+allDBInfos keyPred =
+  transformQ (map readQTerm) $ selectRows keyPred "info" ""
 
 --- Returns a list of all stored entries. Do not use this function
 --- unless the database is small.
 allDBKeyInfos :: KeyPred a -> Query [(Key,a)]
 allDBKeyInfos keyPred =
-  transformQ (map readKeyInfo) $ select keyPred "key, info"
+  transformQ (map readKeyInfo) $ selectRows keyPred "*" ""
 
 readKeyInfo :: String -> (Key,a)
 readKeyInfo row = (readIntOrExit key, readQTerm info)
  where
-  key:info:_ = words row
+  (key,_:info) = break ('|'==) row
 
---- Queries the information stored under the given key.
-getDBInfo :: KeyPred a -> Key -> Query a
-getDBInfo keyPred = transformQ readQTerm . selectKey keyPred "info"
+--- Queries the information stored under the given key. Causes a
+--- run-time error if the given key is not present.
+getDBInfo :: KeyPred a -> Key -> Query (Maybe a)
+getDBInfo keyPred key =
+  transformQ (readQTerm . headOrExit) .
+    selectRows keyPred "info" $ "where key = " ++ show key
+ where
+  headOrExit []    = error $ "no info for key " ++ show key
+  headOrExit (x:_) = x
 
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys =
-  transformQ sortByIndexInGivenList $ selectKeys keyPred "key, info" keys
+  transformQ sortByIndexInGivenList . selectRows keyPred "*" $
+    "where key in (" ++ intercalate "," (map show keys) ++ ")"
  where
   sortByIndexInGivenList rows =
     let keyInfos = map readKeyInfo rows
@@ -282,30 +292,26 @@ getDBInfos keyPred keys =
                 (lookup key keyInfos)
      in foldr addKeyInfo [] keys
 
+intercalate :: [a] -> [[a]] -> [a]
+intercalate l = concat . intersperse l
+
 --- Deletes the information stored under the given key.
 deleteDBEntry :: KeyPred _ -> Key -> Transaction ()
-deleteDBEntry keyPred key = transIO $
-  do sqlite3 0 (dbFile keyPred) $ 
-       "delete from " ++ tableName keyPred ++
-       " where key = " ++ show key
-     done
+deleteDBEntry keyPred key =
+  modify keyPred "delete from" $ "where key = " ++ show key
 
 --- Deletes the information stored under the given keys.
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
-deleteDBEntries keyPred keys = transIO $
-  do sqlite3 0 (dbFile keyPred) $ 
-       "delete from " ++ tableName keyPred ++
-       " where key in (" ++ intercalate "," (map show keys) ++ ")"
-     done
+deleteDBEntries keyPred keys =
+  modify keyPred "delete from" $
+    "where key in (" ++ intercalate "," (map show keys) ++ ")"
 
 --- Updates the information stored under the given key.
 updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
-updateDBEntry keyPred key info = transIO $
-  do sqlite3 0 (dbFile keyPred) $
-       "update " ++ tableName keyPred ++
-       " set info = " ++ quote (showQTerm info) ++
-       " where key = " ++ show key
-     done
+updateDBEntry keyPred key info =
+  modify keyPred "update" $
+    "set info = " ++ quote (showQTerm info) ++
+    " where key = " ++ show key
 
 quote :: String -> String
 quote s = "\"" ++ concatMap quoteChar s ++ "\""
@@ -315,79 +321,75 @@ quote s = "\"" ++ concatMap quoteChar s ++ "\""
 --- Stores new information in the database and yields the newly
 --- generated key.
 newDBEntry :: KeyPred a -> a -> Transaction Key
-newDBEntry keyPred info = transIO $
-  do sqlite3 0 (dbFile keyPred) $
-       "insert into " ++ tableName keyPred ++ " (info) " ++
-       " values (" ++ quote (showQTerm info) ++ ")"
-     [n] <- sqlite3 1 (dbFile keyPred) "select last_insert_rowid()"
-     return $ readIntOrExit n
+newDBEntry keyPred info =
+  modify keyPred "insert into"
+    ("(info) values (" ++ quote (showQTerm info) ++ ")") |>>
+  getDB (selectInt keyPred "last_insert_rowid()" "")
 
 --- Deletes all entries from the database associated with a predicate.
 cleanDB :: KeyPred _ -> Transaction ()
-cleanDB keyPred = transIO $
-  do sqlite3 0 (dbFile keyPred) $ "delete from " ++ tableName keyPred
+cleanDB keyPred = modify keyPred "delete from" ""
+
+-- SQL access functions
+
+-- These functions are not exported and abstract common functionality
+-- used in the library functions above. Each database access is one of
+-- the following: a modification, a selection of a numeric aggregate,
+-- or a selection of rows.
+
+sqlite3 :: DBFile -> String -> IO Handle
+sqlite3 db sql =
+  do h <- getDBHandle db
+     hPutAndFlush h $ sql ++ ";"
+     return h
+
+hPutAndFlush :: Handle -> String -> IO ()
+hPutAndFlush h s = hPutStrLn h s >> hFlush h
+
+modify :: KeyPred _ -> String -> String -> Transaction ()
+modify keyPred before after = transIO $
+  do sqlite3 (dbFile keyPred) $
+       before ++ " " ++ tableName keyPred ++ " " ++ after
      done
 
--- SQL query functions (not exported)
-
-type Row = String
-
-select :: KeyPred _ -> String -> Query [Row]
-select keyPred cols = Query $
-  do let sql = "select " ++ cols ++ " from " ++ tableName keyPred
-     n <- selectCount keyPred
-     putStrLn $ unlines
-       ["Warning: select statement without condition. ",
-        sql,
-        "This query has " ++ show n ++ " results."]
-     sqlite3 n (dbFile keyPred) sql
-
-selectCount :: KeyPred _ -> IO Int
-selectCount keyPred =
-  do [count] <- sqlite3 1 (dbFile keyPred) $
-       "select count(*) from " ++ tableName keyPred
-     return $ readIntOrExit count
+selectInt :: KeyPred _ -> String -> String -> Query Int
+selectInt keyPred aggr cond = transformQ readIntOrExit . Query $
+  do h <- sqlite3 (dbFile keyPred) $
+       "select " ++ aggr ++ " from " ++ tableName keyPred ++ " " ++ cond
+     hGetLine h
 
 -- yields 1 for "1a" and exits for ""
 readIntOrExit :: String -> Int
 readIntOrExit s =
   maybe (error $ "cannot read Int form String " ++ show s) fst $ readInt s
 
-selectWhereCount :: KeyPred _ -> String -> IO Int
-selectWhereCount keyPred cond =
-  do [count] <- sqlite3 1 (dbFile keyPred) $
-       "select count(*) from " ++ tableName keyPred ++ " where " ++ cond
-     return $ readIntOrExit count
+-- When selecting an unknown number of rows it is necessary to know
+-- when to stop. One way to be able to stop is to select 'count(*)'
+-- instead of the actual colums before the query. As it is potentially
+-- inefficient to execute the query twice, this implementation takes a
+-- different approach: generate a random string before the query and
+-- select it afterwards, then read all lines up to this random string.
 
-selectWhere :: KeyPred _ -> String -> String -> Query [String]
-selectWhere keyPred cols cond = Query $
-  do n <- selectWhereCount keyPred cond
-     sqlite3 n (dbFile keyPred) $
-       "select " ++ cols ++ " from " ++ tableName keyPred ++ " where " ++ cond
+type Row = String
 
-selectKey :: KeyPred _ -> String -> Key -> Query Row
-selectKey keyPred cols key =
-  transformQ firstRow . selectWhere keyPred cols $ "key = " ++ show key
- where
-  firstRow []      = error $ "no info for key " ++ show key
-  firstRow (row:_) = row
+selectRows :: KeyPred _ -> String -> String -> Query [Row]
+selectRows keyPred cols cond = Query $
+  do h <- sqlite3 (dbFile keyPred) "select hex(randomblob(8))"
+     rnd <- hGetLine h -- 8 random bytes = 16 random hex chars
+     hPutAndFlush h $
+       "select " ++ cols ++ " from " ++ tableName keyPred ++ cond ++ ";" ++
+       "select " ++ quote rnd ++ ";"
+     hGetLinesBefore h rnd
 
-selectKeys :: KeyPred _ -> String -> [Key] -> Query [Row]
-selectKeys keyPred cols keys = 
-  selectWhere keyPred cols $
-    "key in (" ++ intercalate "," (map show keys) ++ ")"
+hGetLinesBefore :: Handle -> String -> IO [String]
+hGetLinesBefore h stop =
+  do line <- hGetLine h
+     if line == stop
+       then return []
+       else do rest <- hGetLinesBefore h stop
+               return (line : rest)
 
-intercalate :: [a] -> [[a]] -> [a]
-intercalate l = concat . intersperse l
-
-sqlite3 :: Int -> String -> String -> IO [Row]
-sqlite3 n db sql = 
-  do h <- getDBHandle db
-     hPutAndFlush h $ sql ++ ";"
-     sequenceIO . replicate n $ hGetLine h
-
-hPutAndFlush :: Handle -> String -> IO ()
-hPutAndFlush h s = hPutStrLn h s >> hFlush h
+-- Selecting a single row by a key is abstracted into a separate function.
 
 -- Globally stored information
 
@@ -397,11 +399,11 @@ existingDBTables = global [] Temporary
 ensureDBTable :: DBFile -> TableName -> IO ()
 ensureDBTable db table =
   do dbTables <- readGlobal existingDBTables
-     unless ((db,table) `elem` dbTables) $ do
-       sqlite3 0 db $
-         "create table if not exists " ++ table ++
-         " (key integer primary key asc autoincrement, info not null)"
-       writeGlobal existingDBTables ((db,table):dbTables)
+     unless ((db,table) `elem` dbTables) $
+       do sqlite3 db $ "create table if not exists " ++ table ++
+                       " (key integer primary key asc autoincrement," ++
+                       "  info not null)"
+          writeGlobal existingDBTables ((db,table):dbTables)
 
 unless :: Bool -> IO () -> IO ()
 unless True  _      = done
