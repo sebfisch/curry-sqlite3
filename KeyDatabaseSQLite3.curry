@@ -334,7 +334,7 @@ deleteDBEntries keyPred keys =
 --- the given key is not present in the database.
 updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
-  errorUnlessKeyExists keyPred key ("updateDBEntry: " ++ show key) |>>
+  errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
     ("set info = " ++ quote (showQTerm info) ++
      " where key = " ++ show key)
