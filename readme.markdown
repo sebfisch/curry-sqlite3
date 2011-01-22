@@ -96,8 +96,8 @@ stored in the database.
 The value is stored twice under different keys, because we have
 executed `main` twice.
 
-The values are stored in the database using the a string
-representation that can be parsed using the [`readQTerm`] function.
+The values are stored in the database using a string representation
+that can be parsed using the [`readQTerm`] function.
 
 [`readQTerm`]: http://www.informatik.uni-kiel.de/~pakcs/lib/CDOC/ReadShowTerm.html#readQTerm
 
