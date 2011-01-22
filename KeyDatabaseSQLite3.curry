@@ -63,6 +63,8 @@ import ReadNumeric  ( readInt )
 import ReadShowTerm ( readQTerm, showQTerm )
 import Unsafe       ( unsafePerformIO ) -- create DB and table on first access
 
+infixl 1 |>>, |>>=
+
 -- adjust this if 'sqlite3' is not in the PATH
 path'to'sqlite3 :: String
 path'to'sqlite3 = "sqlite3"
@@ -315,9 +317,9 @@ deleteDBEntries keyPred keys =
 updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry: " ++ show key) |>>
-  modify keyPred "update" $
-    "set info = " ++ quote (showQTerm info) ++
-    " where key = " ++ show key)
+  modify keyPred "update"
+    ("set info = " ++ quote (showQTerm info) ++
+     " where key = " ++ show key)
 
 errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
 errorUnlessKeyExists keyPred key msg =
