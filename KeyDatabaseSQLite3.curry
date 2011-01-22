@@ -114,7 +114,7 @@ unTrans (Trans action) = action
 runT :: Transaction a -> IO (Either a TError)
 runT trans =
   do withAllDBHandles (`hPutAndFlush` "begin immediate;")
-     result <- unTrans trans
+     result <- catchTrans $ unTrans trans
      case result of
        Error err ->
          do withAllDBHandles (`hPutAndFlush` "rollback;")
@@ -122,6 +122,13 @@ runT trans =
        OK res ->
          do withAllDBHandles (`hPutAndFlush` "commit;")
             return (Left res)
+
+catchTrans :: IO (TransResult a) -> IO (TransResult a)
+catchTrans action =
+  action `catch` \ (IOError msg) ->
+    do err <- readGlobal lastQueryError
+       writeGlobal lastQueryError Nothing
+       return . Error $ maybe (TError ExecutionError msg) id err
 
 --- Like <code>runT</code> but fails on transaction errors.
 runJustT :: Transaction a -> IO a
@@ -134,11 +141,7 @@ runJustT trans =
 --- during the execution of the given query are transformed into
 --- transaction errors.
 getDB :: Query a -> Transaction a
-getDB query = Trans $
-  (runQ query >>= return . OK) `catch` \ (IOError msg) ->
-    do err <- readGlobal lastQueryError
-       writeGlobal lastQueryError Nothing
-       return . Error $ maybe (TError ExecutionError msg) id err
+getDB query = Trans . catchTrans $ runQ query >>= return . OK
 
 -- not exported
 transIO :: IO a -> Transaction a
@@ -424,24 +427,14 @@ hGetLinesBefore h stop =
        else do rest <- hGetLinesBefore h stop
                return (line : rest)
 
--- Globally stored information
-
-existingDBTables :: Global [(DBFile,TableName)]
-existingDBTables = global [] Temporary
+-- helper functions and globbaly stored information
 
 ensureDBTable :: DBFile -> TableName -> IO ()
 ensureDBTable db table =
-  do dbTables <- readGlobal existingDBTables
-     getDBHandle db
-     unless ((db,table) `elem` dbTables) $
-       do sqlite3 db $ "create table if not exists " ++ table ++
-                       " (key integer primary key asc autoincrement," ++
-                       "  info not null)"
-          writeGlobal existingDBTables ((db,table):dbTables)
-
-unless :: Bool -> IO () -> IO ()
-unless True  _      = done
-unless False action = action
+  do sqlite3 db $ "create table if not exists " ++ table ++
+                  " (key integer primary key asc autoincrement," ++
+                  "  info not null)"
+     done
 
 openDBHandles :: Global [(DBFile,Handle)]
 openDBHandles = global [] Temporary
@@ -461,7 +454,9 @@ closeDBHandles =
 ensureDBHandle :: DBFile -> IO ()
 ensureDBHandle db =
   do dbHandles <- readGlobal openDBHandles
-     maybe (addNewDBHandle dbHandles) (const done) $ lookup db dbHandles
+     if db `elem` map fst dbHandles
+       then done
+       else addNewDBHandle dbHandles
  where
   addNewDBHandle dbHandles =
     do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
@@ -473,7 +468,7 @@ getDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
  where
   err = dbError ExecutionError $ unlines
     ["no handle for " ++ db,
-     "call ensureDBFor for the corresponding predicate,"]
+     "call ensureDBFor for the corresponding predicate"]
 
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 (f `on` g) x y = f (g x) (g y)

@@ -123,6 +123,9 @@ test'queryListWithOneDeleted =
    getDB (getDBInfos testPred keys))
      `tExitsWith` KeyNotExistsError
 
+test'rollbackOnError :: Test
+test'rollbackOnError = error "message" `tExitsWith` ExecutionError
+
 -- test combinators
 
 type Test = IO (Maybe String)
@@ -212,3 +215,4 @@ main =
      runTest "updateCreated" test'updateCreated
      runTest "queryDeleted" test'queryDeleted
      runTest "queryListWithOneDeleted" test'queryListWithOneDeleted
+     runTest "rollbackOnError" test'rollbackOnError
