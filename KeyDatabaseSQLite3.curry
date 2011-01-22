@@ -26,7 +26,8 @@
 --- Compared with the interface of <code>KeyDatabase</code>, this module
 --- lacks definitions for <code>index</code>, <code>sortByIndex</code>,
 --- <code>groupByIndex</code>, and <code>runTNA</code> and adds the
---- functions <code>deleteDBEntries</code> and <code>closeDBHandles</code>. 
+--- functions <code>deleteDBEntries</code>,
+--- <code>ensureDBFor</code>, and <code>closeDBHandles</code>.
 ---
 --- @author Sebastian Fischer
 --- @version January 2011
@@ -34,12 +35,13 @@
 
 module KeyDatabaseSQLite3 (
 
-  Query, runQ,
+  Query, runQ, transformQ, getDB,
 
-  Transaction, TError(..), TErrorKind(..), runT, runJustT,
-  (|>>=), (|>>), sequenceT, sequenceT_, mapT, mapT_,
+  Transaction, TError(..), TErrorKind(..), showTError, runT, runJustT,
+  returnT, doneT, errorT, failT, (|>>=), (|>>),
+  sequenceT, sequenceT_, mapT, mapT_,
 
-  Dynamic, persistentSQLite3,
+  Dynamic, persistentSQLite3, ensureDBFor, closeDBHandles,
 
   existsDBKey,
 
@@ -47,21 +49,18 @@ module KeyDatabaseSQLite3 (
 
   getDBInfo, getDBInfos,
 
-  deleteDBEntry, deleteDBEntries, updateDBEntry, newDBEntry, cleanDB,
-
-  closeDBHandles
+  deleteDBEntry, deleteDBEntries, updateDBEntry, newDBEntry, cleanDB
 
   ) where
 
-import Database     ( TError(..), TErrorKind(..) )
+import Database     ( TError(..), TErrorKind(..), showTError )
 import Global       ( Global, GlobalSpec(..), global, readGlobal, writeGlobal )
 import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose )
 import IOExts       ( connectToCommand )
 import List         ( intersperse, insertBy )
 import Maybe        ( mapMaybe )
 import ReadNumeric  ( readInt )
-import ReadShowTerm ( readQTerm, showQTerm )
-import Unsafe       ( unsafePerformIO ) -- create DB and table on first access
+import ReadShowTerm ( readQTerm, showQTerm, readsQTerm )
 
 infixl 1 |>>, |>>=
 
@@ -114,14 +113,14 @@ unTrans (Trans action) = action
 ---
 runT :: Transaction a -> IO (Either a TError)
 runT trans =
-  do withAllDBHandles (`hPutAndFlush` "begin immediate")
+  do withAllDBHandles (`hPutAndFlush` "begin immediate;")
      result <- unTrans trans
      case result of
        Error err ->
-         do withAllDBHandles (`hPutAndFlush` "rollback")
+         do withAllDBHandles (`hPutAndFlush` "rollback;")
             return (Right err)
        OK res ->
-         do withAllDBHandles (`hPutAndFlush` "commit")
+         do withAllDBHandles (`hPutAndFlush` "commit;")
             return (Left res)
 
 --- Like <code>runT</code> but fails on transaction errors.
@@ -131,9 +130,15 @@ runJustT trans =
      return result
 
 --- Lifts a database query to the transaction type such that it can be
---- composed with othe rtransactions.
+--- composed with other transactions. Run-time errors that occur
+--- during the execution of the given query are transformed into
+--- transaction errors.
 getDB :: Query a -> Transaction a
-getDB = transIO . runQ
+getDB query = Trans $
+  (runQ query >>= return . OK) `catch` \ (IOError msg) ->
+    do err <- readGlobal lastQueryError
+       writeGlobal lastQueryError Nothing
+       return . Error $ maybe (TError ExecutionError msg) id err
 
 -- not exported
 transIO :: IO a -> Transaction a
@@ -238,61 +243,74 @@ tableName = snd . dbInfo
 --- @param dbFile - the name of a database file
 --- @param tableName - the name of a database table
 persistentSQLite3 :: DBFile -> TableName -> KeyPred a
-persistentSQLite3 db table _ _ = unsafePerformIO $
-  do ensureDBTable db table
-     return $ DBInfo db table
+persistentSQLite3 db table _ _ = DBInfo db table
+
+--- Initializes the database and table for the given predicate. This
+--- function must be called before the database for this predicate is
+--- accessed and before a transaction that uses this predicate is
+--- started.
+ensureDBFor :: KeyPred _ -> IO ()
+ensureDBFor keyPred =
+  do ensureDBHandle db
+     ensureDBTable db table
+ where
+  (db,table) = dbInfo keyPred
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
-existsDBKey keyPred key =
-  transformQ (0/=) . selectInt keyPred "count(*)" $ "where key = " ++ show key
+existsDBKey keyPred key = Query $
+  do n <- selectInt keyPred "count(*)" $ "where key = " ++ show key
+     return $! n > 0
 
 --- Returns a list of all stored keys. Do not use this function unless
 --- the database is small.
 allDBKeys :: KeyPred _ -> Query [Key]
-allDBKeys keyPred =
-  transformQ (map readIntOrExit) $ selectRows keyPred "key" ""
+allDBKeys keyPred = Query $
+  do rows <- selectRows keyPred "key" ""
+     mapIO readIntOrExit rows
 
 --- Returns a list of all info parts of stored entries. Do not use this
 --- function unless the database is small.
 allDBInfos :: KeyPred a -> Query [a]
-allDBInfos keyPred =
-  transformQ (map readQTerm) $ selectRows keyPred "info" ""
+allDBInfos keyPred = Query $
+  do rows <- selectRows keyPred "info" ""
+     return $!! map readQTerm rows
 
 --- Returns a list of all stored entries. Do not use this function
 --- unless the database is small.
 allDBKeyInfos :: KeyPred a -> Query [(Key,a)]
-allDBKeyInfos keyPred =
-  transformQ (map readKeyInfo) $ selectRows keyPred "*" ""
+allDBKeyInfos keyPred = Query $
+  do rows <- selectRows keyPred "*" ""
+     mapIO readKeyInfo rows
 
-readKeyInfo :: String -> (Key,a)
-readKeyInfo row = (readIntOrExit key, readQTerm info)
+readKeyInfo :: String -> IO (Key,a)
+readKeyInfo row =
+  do key <- readIntOrExit keyStr
+     return $!! (key, readQTerm infoStr)
  where
-  (key,_:info) = break ('|'==) row
+  (keyStr,_:infoStr) = break ('|'==) row
 
 --- Queries the information stored under the given key. Causes a
 --- run-time error if the given key is not present.
-getDBInfo :: KeyPred a -> Key -> Query (Maybe a)
-getDBInfo keyPred key =
-  transformQ (readQTerm . headOrExit) .
-    selectRows keyPred "info" $ "where key = " ++ show key
+getDBInfo :: KeyPred a -> Key -> Query a
+getDBInfo keyPred key = Query $
+  do rows <- selectRows keyPred "info" $ "where key = " ++ show key
+     readHeadOrExit rows
  where
-  headOrExit []    = error $ "getDBInfo: no info for key " ++ show key
-  headOrExit (x:_) = x
+  readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
+  readHeadOrExit (x:_) = return $!! readQTerm x
 
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
-getDBInfos keyPred keys =
-  transformQ sortByIndexInGivenList . selectRows keyPred "*" $
-    "where key in (" ++ intercalate "," (map show keys) ++ ")"
+getDBInfos keyPred keys = Query $
+  do rows <- selectRows keyPred "*" $
+               "where key in (" ++ intercalate "," (map show keys) ++ ")"
+     sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
-    let keyInfos = map readKeyInfo rows
-        addKeyInfo key infos =
-          maybe (error $ "getDBInfos: no info for key " ++ show key)
-                (\info -> info : infos)
-                (lookup key keyInfos)
-     in foldr addKeyInfo [] keys
+    do keyInfos <- mapIO readKeyInfo rows
+       let err key = dbError KeyNotExistsError $ "getDBInfos, " ++ show key
+       mapIO (\key -> maybe (err key) return (lookup key keyInfos)) keys
 
 intercalate :: [a] -> [[a]] -> [a]
 intercalate l = concat . intersperse l
@@ -329,9 +347,9 @@ errorUnlessKeyExists keyPred key msg =
     else doneT
 
 quote :: String -> String
-quote s = "\"" ++ concatMap quoteChar s ++ "\""
+quote s = "'" ++ concatMap quoteChar s ++ "'"
  where
-  quoteChar c = if c == '"' then ['\\','"'] else [c]
+  quoteChar c = if c == ''' then ['\\','''] else [c]
 
 --- Stores new information in the database and yields the newly
 --- generated key.
@@ -339,7 +357,7 @@ newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
     ("(info) values (" ++ quote (showQTerm info) ++ ")") |>>
-  getDB (selectInt keyPred "last_insert_rowid()" "")
+  getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
 
 --- Deletes all entries from the database associated with a predicate.
 cleanDB :: KeyPred _ -> Transaction ()
@@ -367,16 +385,18 @@ modify keyPred before after = transIO $
        before ++ " " ++ tableName keyPred ++ " " ++ after
      done
 
-selectInt :: KeyPred _ -> String -> String -> Query Int
-selectInt keyPred aggr cond = transformQ readIntOrExit . Query $
+selectInt :: KeyPred _ -> String -> String -> IO Int
+selectInt keyPred aggr cond =
   do h <- sqlite3 (dbFile keyPred) $
-       "select " ++ aggr ++ " from " ++ tableName keyPred ++ " " ++ cond
-     hGetLine h
+       "select distinct " ++ aggr ++
+       " from " ++ tableName keyPred ++ " " ++ cond
+     hGetLine h >>= readIntOrExit
 
 -- yields 1 for "1a" and exits for ""
-readIntOrExit :: String -> Int
-readIntOrExit s =
-  maybe (error $ "cannot read Int form String " ++ show s) fst $ readInt s
+readIntOrExit :: String -> IO Int
+readIntOrExit s = maybe err (return . fst) $ readInt s
+ where
+  err = dbError ExecutionError $ "readIntOrExit, " ++ show s
 
 -- When selecting an unknown number of rows it is necessary to know
 -- when to stop. One way to be able to stop is to select 'count(*)'
@@ -387,13 +407,13 @@ readIntOrExit s =
 
 type Row = String
 
-selectRows :: KeyPred _ -> String -> String -> Query [Row]
-selectRows keyPred cols cond = Query $
+selectRows :: KeyPred _ -> String -> String -> IO [Row]
+selectRows keyPred cols cond =
   do h <- sqlite3 (dbFile keyPred) "select hex(randomblob(8))"
      rnd <- hGetLine h -- 8 random bytes = 16 random hex chars
      hPutAndFlush h $
-       "select " ++ cols ++ " from " ++ tableName keyPred ++ cond ++ ";" ++
-       "select " ++ quote rnd ++ ";"
+       "select " ++ cols ++ " from " ++ tableName keyPred ++
+       " " ++ cond ++ "; select " ++ quote rnd ++ ";"
      hGetLinesBefore h rnd
 
 hGetLinesBefore :: Handle -> String -> IO [String]
@@ -404,8 +424,6 @@ hGetLinesBefore h stop =
        else do rest <- hGetLinesBefore h stop
                return (line : rest)
 
--- Selecting a single row by a key is abstracted into a separate function.
-
 -- Globally stored information
 
 existingDBTables :: Global [(DBFile,TableName)]
@@ -414,6 +432,7 @@ existingDBTables = global [] Temporary
 ensureDBTable :: DBFile -> TableName -> IO ()
 ensureDBTable db table =
   do dbTables <- readGlobal existingDBTables
+     getDBHandle db
      unless ((db,table) `elem` dbTables) $
        do sqlite3 db $ "create table if not exists " ++ table ++
                        " (key integer primary key asc autoincrement," ++
@@ -433,20 +452,36 @@ withAllDBHandles f =
      mapIO_ (f . snd) dbHandles
 
 --- Closes all database connections. Should be called when no more
---- database queries or updates will be executed.
+--- database access will be necessary.
 closeDBHandles :: IO ()
-closeDBHandles = withAllDBHandles hClose
+closeDBHandles =
+  do withAllDBHandles hClose
+     writeGlobal openDBHandles []
+
+ensureDBHandle :: DBFile -> IO ()
+ensureDBHandle db =
+  do dbHandles <- readGlobal openDBHandles
+     maybe (addNewDBHandle dbHandles) (const done) $ lookup db dbHandles
+ where
+  addNewDBHandle dbHandles =
+    do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
+       writeGlobal openDBHandles $ -- sort against deadlock
+         insertBy ((<=) `on` fst) (db,h) dbHandles
 
 getDBHandle :: DBFile -> IO Handle
-getDBHandle db =
-  do dbHandles <- readGlobal openDBHandles
-     let createDBHandle =
-           do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
-              writeGlobal openDBHandles $ -- sort against deadlock
-                insertBy ((<=) `on` fst) (db,h) dbHandles
-              return h
-     maybe createDBHandle return $ lookup db dbHandles
+getDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
+ where
+  err = dbError ExecutionError $ unlines
+    ["no handle for " ++ db,
+     "call ensureDBFor for the corresponding predicate,"]
 
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 (f `on` g) x y = f (g x) (g y)
 
+lastQueryError :: Global (Maybe TError)
+lastQueryError = global Nothing Temporary
+
+dbError :: TErrorKind -> String -> IO a
+dbError kind msg =
+  do writeGlobal lastQueryError . Just $ TError kind msg
+     error $ show kind ++ ": " ++ msg
