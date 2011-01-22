@@ -108,7 +108,7 @@ If you want to try this library yourself, you need to install the
 Curry system [PAKCS] and the `sqlite3` command line program. This
 module comes with tests that can be executed by running:
 
-    # pakcs -1 -r tests.curry
+    # pakcs -q -r tests.curry
 
 in the directory where this library and the test file reside. You can
 generate HTML documentation for the module by calling:
