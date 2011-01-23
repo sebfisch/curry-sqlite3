@@ -547,6 +547,7 @@ showTupleArgs = splitTLC . removeOuterParens . showQTerm
 removeOuterParens :: String -> String
 removeOuterParens ('(':cs) = reverse . tail $ reverse cs
 
+-- split at top-level commas
 splitTLC :: String -> [String]
 splitTLC = parse ""
 
