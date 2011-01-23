@@ -346,19 +346,19 @@ updateDBEntry keyPred key info =
     ("set " ++ commaSep (colVals keyPred info) ++
      " where _rowid_ = " ++ show key)
 
-colVals :: KeyPred a -> a -> [String]
-colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
- where
-  cols = colNames keyPred
-  vals | null $ tail cols = [showQTerm info]
-       | otherwise        = showTupleArgs info
-
 errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
 errorUnlessKeyExists keyPred key msg =
   getDB (existsDBKey keyPred key) |>>= \exists ->
   if not exists
     then errorT $ TError KeyNotExistsError msg
     else doneT
+
+colVals :: KeyPred a -> a -> [String]
+colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
+ where
+  cols = colNames keyPred
+  vals | null $ tail cols = [showQTerm info]
+       | otherwise        = showTupleArgs info
 
 quote :: String -> String
 quote s = "'" ++ concatMap quoteChar s ++ "'"
