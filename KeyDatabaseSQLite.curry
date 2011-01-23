@@ -243,22 +243,33 @@ colNames = snd . snd . dbInfo
 --- If the provided database or the table do not exist they are created
 --- automatically when the declared predicate is accessed for the first time.
 ---
---- @param dbFile - the name of a database file
---- @param tableName - the name of a database table
+--- Multiple column names can be provided if the second argument of
+--- the predicate is a tuple with a matching arity. Other record types
+--- are not supported. If no column names are provided a table with a
+--- single column called <code>info</code> is created. Columns of name
+--- <code>_rowid_</code> are not supported and lead to a run-time
+--- error.
+---
+--- @param dbFile - the name of the associated database file
+--- @param tableName - the name of the associated database table
+--- @param colNames - the column names of the associated database table
 persistentSQLite :: DBFile -> TableName -> [ColName] -> KeyPred a
-persistentSQLite db table cols _ _ = DBInfo db table cols
+persistentSQLite db table cols _ _
+  | null cols = DBInfo db table ["info"]
+  | any (=="_rowid_") cols = error "columns must not be called _rowid_"
+  | otherwise = DBInfo db table cols
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
 existsDBKey keyPred key = Query $
-  do n <- selectInt keyPred "count(*)" $ "where rowid = " ++ show key
+  do n <- selectInt keyPred "count(*)" $ "where _rowid_ = " ++ show key
      return $! n > 0
 
 --- Returns a list of all stored keys. Do not use this function unless
 --- the database is small.
 allDBKeys :: KeyPred _ -> Query [Key]
 allDBKeys keyPred = Query $
-  do rows <- selectRows keyPred "rowid" ""
+  do rows <- selectRows keyPred "_rowid_" ""
      mapIO readIntOrExit rows
 
 --- Returns a list of all info parts of stored entries. Do not use this
@@ -275,7 +286,7 @@ readInfo str = readQTerm $ "(" ++ str ++ ")"
 --- unless the database is small.
 allDBKeyInfos :: KeyPred a -> Query [(Key,a)]
 allDBKeyInfos keyPred = Query $
-  do rows <- selectRows keyPred "rowid,*" ""
+  do rows <- selectRows keyPred "_rowid_,*" ""
      mapIO readKeyInfo rows
 
 readKeyInfo :: String -> IO (Key,a)
@@ -289,7 +300,7 @@ readKeyInfo row =
 --- run-time error if the given key is not present.
 getDBInfo :: KeyPred a -> Key -> Query a
 getDBInfo keyPred key = Query $
-  do rows <- selectRows keyPred "*" $ "where rowid = " ++ show key
+  do rows <- selectRows keyPred "*" $ "where _rowid_ = " ++ show key
      readHeadOrExit rows
  where
   readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
@@ -298,8 +309,8 @@ getDBInfo keyPred key = Query $
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys = Query $
-  do rows <- selectRows keyPred "rowid,*" $
-               "where rowid in (" ++ intercalate ", " (map show keys) ++ ")"
+  do rows <- selectRows keyPred "_rowid_,*" $
+               "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
      sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
@@ -315,14 +326,14 @@ intercalate l = concat . intersperse l
 --- error is raised.
 deleteDBEntry :: KeyPred _ -> Key -> Transaction ()
 deleteDBEntry keyPred key =
-  modify keyPred "delete from" $ "where rowid = " ++ show key
+  modify keyPred "delete from" $ "where _rowid_ = " ++ show key
 
 --- Deletes the information stored under the given keys. No error is
 --- raised if (some of) the keys do not exist.
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
-    "where rowid in (" ++ intercalate ", " (map show keys) ++ ")"
+    "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
 
 --- Updates the information stored under the given key. The
 --- transaction is aborted with a <code>KeyNotExistsError</code> if
@@ -332,7 +343,7 @@ updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
     ("set " ++ intercalate ", " (colVals keyPred info) ++
-     " where rowid = " ++ show key)
+     " where _rowid_ = " ++ show key)
 
 colVals :: KeyPred a -> a -> [String]
 colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
@@ -594,4 +605,3 @@ updStack char stack =
 --   do l <- IO.hGetLine h
 --      IO.hPutStrLn stderr $ "<  " ++ l
 --      return l
-
