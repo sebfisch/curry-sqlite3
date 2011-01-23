@@ -1,6 +1,12 @@
 Changes in curry-sqlite3
 ========================
 
+0.4
+---
+
+  * tuples can be stored in multiple columns
+  * `persistentSQLite` has an argument for column names
+
 0.3
 ---
 

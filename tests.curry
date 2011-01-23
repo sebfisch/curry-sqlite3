@@ -2,8 +2,9 @@ import IO
 import KeyDatabaseSQLite
 import List ( sortBy ); sort = sortBy (<=)
 
-testPred :: Int -> String -> Dynamic
-testPred = persistentSQLite "test.db" "test"
+testPred :: Int -> (String,Int) -> Dynamic
+testPred = persistentSQLite "test.db" "test" ["rowid","oid"]
+-- column names should not conflict with the internally used _rowid_
 
 test'notExists :: Test
 test'notExists = existsDBKey testPred 0 `qYields` False
@@ -35,22 +36,22 @@ test'deleteKeysEmpty = deleteDBEntries testPred [0,1,2] `tYields` ()
 
 test'updateEmpty :: Test
 test'updateEmpty =
-  updateDBEntry testPred 0 "" `tExitsWith` KeyNotExistsError
+  updateDBEntry testPred 0 ("",1) `tExitsWith` KeyNotExistsError
 
 test'createdExists :: Test
 test'createdExists =
-  (newDBEntry testPred "new" |>>= getDB . existsDBKey testPred)
+  (newDBEntry testPred ("new",42) |>>= getDB . existsDBKey testPred)
     `tYields` True
 
 test'createdGoneAfterClean :: Test
 test'createdGoneAfterClean =
-  (newDBEntry testPred "new" |>>= \key ->
+  (newDBEntry testPred ("new",42) |>>= \key ->
    cleanDB testPred |>> getDB (getDBInfo testPred key))
     `tExitsWith` KeyNotExistsError
 
 test'getAllCreatedKeys :: Test
 test'getAllCreatedKeys =
-  (mapT (newDBEntry testPred) ["a","b","c"] |>>= \keys1 ->
+  (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys1 ->
    getDB (allDBKeys testPred) |>>= \keys2 ->
    returnT (sameBag keys1 keys2))
     `tYields` True
@@ -60,7 +61,7 @@ sameBag xs ys = sort xs == sort ys
 
 test'getAllCreatedInfos :: Test
 test'getAllCreatedInfos =
-  let infos1 = ["a","b","c"]
+  let infos1 = [("a",10),("b",20),("c",30)]
    in (mapT (newDBEntry testPred) infos1 |>>
        getDB (allDBInfos testPred) |>>= \infos2 ->
        returnT (sort infos2))
@@ -68,7 +69,7 @@ test'getAllCreatedInfos =
 
 test'getAllCreatedKeyInfos :: Test
 test'getAllCreatedKeyInfos =
-  let infos = ["a","b","c"]
+  let infos = [("a",10),("b",20),("c",30)]
    in (mapT (newDBEntry testPred) infos |>>= \keys ->
        let keyinfos1 = zip keys infos
         in getDB (allDBKeyInfos testPred) |>>= \keyinfos2 ->
@@ -77,48 +78,48 @@ test'getAllCreatedKeyInfos =
 
 test'getCreatedInfo :: Test
 test'getCreatedInfo =
-  (newDBEntry testPred "new" |>>= getDB . getDBInfo testPred)
-    `tYields` "new"
+  (newDBEntry testPred ("new",42) |>>= getDB . getDBInfo testPred)
+    `tYields` ("new",42)
 
 test'getCreatedInfos :: Test
 test'getCreatedInfos =
-  let infos = ["a","b","c"]
+  let infos = [("a",10),("b",20),("c",30)]
    in (mapT (newDBEntry testPred) infos |>>= \keys ->
        getDB (getDBInfos testPred keys))
         `tYields` infos
 
 test'deleteOneCreated :: Test
 test'deleteOneCreated =
-  (mapT (newDBEntry testPred) ["a","b","c"] |>>= \keys ->
+  (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys ->
    deleteDBEntry testPred (keys!!1) |>>
    getDB (allDBInfos testPred) |>>= \infos ->
    returnT (sort infos))
-     `tYields` ["a","c"]
+     `tYields` [("a",10),("c",30)]
 
 test'deleteAllCreated :: Test
 test'deleteAllCreated =
-  (mapT (newDBEntry testPred) ["a","b","c"] |>>= \keys ->
+  (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys ->
    deleteDBEntries testPred keys |>>
    getDB (allDBKeys testPred))
      `tYields` []
 
 test'updateCreated :: Test
 test'updateCreated =
-  (newDBEntry testPred "old" |>>= \key ->
-   updateDBEntry testPred key "new" |>>
+  (newDBEntry testPred ("old",41) |>>= \key ->
+   updateDBEntry testPred key ("new",42) |>>
    getDB (getDBInfo testPred key))
-     `tYields` "new"
+     `tYields` ("new",42)
 
 test'queryDeleted :: Test
 test'queryDeleted =
-  (newDBEntry testPred "new" |>>= \key ->
+  (newDBEntry testPred ("new",42) |>>= \key ->
    deleteDBEntry testPred key |>>
    getDB (getDBInfo testPred key))
      `tExitsWith` KeyNotExistsError
 
 test'queryListWithOneDeleted :: Test
 test'queryListWithOneDeleted =
-  (mapT (newDBEntry testPred) ["a","b","c"] |>>= \keys ->
+  (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys ->
    deleteDBEntry testPred (keys!!1) |>>
    getDB (getDBInfos testPred keys))
      `tExitsWith` KeyNotExistsError

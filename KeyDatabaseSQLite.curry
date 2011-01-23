@@ -209,22 +209,20 @@ mapT_ f = sequenceT_ . map f
 
 -- Interface based on keys
 
---- The name of the database file.
 type DBFile = String
-
---- The name of the database table in which a predicate is stored.
 type TableName = String
+type ColName = String
 
 --- Result type of database predicates.
-data Dynamic = DBInfo DBFile TableName
+data Dynamic = DBInfo DBFile TableName [ColName]
 
 type Key = Int
 type KeyPred a = Key -> a -> Dynamic -- for interface compatibility
 
-dbInfo :: KeyPred a -> (DBFile,TableName)
-dbInfo keyPred = (db,table)
+dbInfo :: KeyPred a -> (DBFile,(TableName,[ColName]))
+dbInfo keyPred = (db,(table,cols))
  where
-  DBInfo db table = keyPred ignored ignored
+  DBInfo db table cols = keyPred ignored ignored
 
 ignored :: a
 ignored = error "unexpected access to argument of database predicate"
@@ -233,7 +231,10 @@ dbFile :: KeyPred _ -> DBFile
 dbFile = fst . dbInfo
 
 tableName :: KeyPred _ -> TableName
-tableName = snd . dbInfo
+tableName = fst . snd . dbInfo
+
+colNames :: KeyPred _ -> [ColName]
+colNames = snd . snd . dbInfo
 
 --- This function is used instead of <code>dynamic</code> or
 --- <code>persistent</code> to declare predicates whose facts are stored
@@ -242,22 +243,33 @@ tableName = snd . dbInfo
 --- If the provided database or the table do not exist they are created
 --- automatically when the declared predicate is accessed for the first time.
 ---
---- @param dbFile - the name of a database file
---- @param tableName - the name of a database table
-persistentSQLite :: DBFile -> TableName -> KeyPred a
-persistentSQLite db table _ _ = DBInfo db table
+--- Multiple column names can be provided if the second argument of
+--- the predicate is a tuple with a matching arity. Other record types
+--- are not supported. If no column names are provided a table with a
+--- single column called <code>info</code> is created. Columns of name
+--- <code>_rowid_</code> are not supported and lead to a run-time
+--- error.
+---
+--- @param dbFile - the name of the associated database file
+--- @param tableName - the name of the associated database table
+--- @param colNames - the column names of the associated database table
+persistentSQLite :: DBFile -> TableName -> [ColName] -> KeyPred a
+persistentSQLite db table cols _ _
+  | null cols = DBInfo db table ["info"]
+  | any (=="_rowid_") cols = error "columns must not be called _rowid_"
+  | otherwise = DBInfo db table cols
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
 existsDBKey keyPred key = Query $
-  do n <- selectInt keyPred "count(*)" $ "where rowid = " ++ show key
+  do n <- selectInt keyPred "count(*)" $ "where _rowid_ = " ++ show key
      return $! n > 0
 
 --- Returns a list of all stored keys. Do not use this function unless
 --- the database is small.
 allDBKeys :: KeyPred _ -> Query [Key]
 allDBKeys keyPred = Query $
-  do rows <- selectRows keyPred "rowid" ""
+  do rows <- selectRows keyPred "_rowid_" ""
      mapIO readIntOrExit rows
 
 --- Returns a list of all info parts of stored entries. Do not use this
@@ -265,37 +277,40 @@ allDBKeys keyPred = Query $
 allDBInfos :: KeyPred a -> Query [a]
 allDBInfos keyPred = Query $
   do rows <- selectRows keyPred "*" ""
-     return $!! map readQTerm rows
+     return $!! map readInfo rows
+
+readInfo :: String -> a
+readInfo str = readQTerm $ "(" ++ str ++ ")"
 
 --- Returns a list of all stored entries. Do not use this function
 --- unless the database is small.
 allDBKeyInfos :: KeyPred a -> Query [(Key,a)]
 allDBKeyInfos keyPred = Query $
-  do rows <- selectRows keyPred "rowid,*" ""
+  do rows <- selectRows keyPred "_rowid_,*" ""
      mapIO readKeyInfo rows
 
 readKeyInfo :: String -> IO (Key,a)
 readKeyInfo row =
   do key <- readIntOrExit keyStr
-     return $!! (key, readQTerm infoStr)
+     return $!! (key, readInfo infoStr)
  where
-  (keyStr,_:infoStr) = break ('|'==) row
+  (keyStr,_:infoStr) = break (','==) row
 
 --- Queries the information stored under the given key. Causes a
 --- run-time error if the given key is not present.
 getDBInfo :: KeyPred a -> Key -> Query a
 getDBInfo keyPred key = Query $
-  do rows <- selectRows keyPred "*" $ "where rowid = " ++ show key
+  do rows <- selectRows keyPred "*" $ "where _rowid_ = " ++ show key
      readHeadOrExit rows
  where
   readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
-  readHeadOrExit (x:_) = return $!! readQTerm x
+  readHeadOrExit (x:_) = return $!! readInfo x
 
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys = Query $
-  do rows <- selectRows keyPred "rowid,*" $
-               "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
+  do rows <- selectRows keyPred "_rowid_,*" $
+               "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
      sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
@@ -311,14 +326,14 @@ intercalate l = concat . intersperse l
 --- error is raised.
 deleteDBEntry :: KeyPred _ -> Key -> Transaction ()
 deleteDBEntry keyPred key =
-  modify keyPred "delete from" $ "where rowid = " ++ show key
+  modify keyPred "delete from" $ "where _rowid_ = " ++ show key
 
 --- Deletes the information stored under the given keys. No error is
 --- raised if (some of) the keys do not exist.
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
-    "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
+    "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
 
 --- Updates the information stored under the given key. The
 --- transaction is aborted with a <code>KeyNotExistsError</code> if
@@ -327,8 +342,15 @@ updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
-    ("set info = " ++ quote (showQTerm info) ++
-     " where rowid = " ++ show key)
+    ("set " ++ intercalate ", " (colVals keyPred info) ++
+     " where _rowid_ = " ++ show key)
+
+colVals :: KeyPred a -> a -> [String]
+colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
+ where
+  cols = colNames keyPred
+  vals | null $ tail cols = [showQTerm info]
+       | otherwise        = showTupleArgs info
 
 errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
 errorUnlessKeyExists keyPred key msg =
@@ -340,15 +362,18 @@ errorUnlessKeyExists keyPred key msg =
 quote :: String -> String
 quote s = "'" ++ concatMap quoteChar s ++ "'"
  where
-  quoteChar c = if c == ''' then ['\\','''] else [c]
+  quoteChar c = if c == ''' then "''" else [c]
 
 --- Stores new information in the database and yields the newly
 --- generated key.
 newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
-    ("values (" ++ quote (showQTerm info) ++ ")") |>>
+    ("values (" ++ intercalate ", " (map quote vals) ++ ")") |>>
   getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
+ where
+  vals | null . tail $ colNames keyPred = [showQTerm info]
+       | otherwise = showTupleArgs info
 
 --- Deletes all entries from the database associated with a predicate.
 cleanDB :: KeyPred _ -> Transaction ()
@@ -444,9 +469,9 @@ getDBHandle keyPred =
 ensureDBFor :: KeyPred _ -> IO ()
 ensureDBFor keyPred =
   do ensureDBHandle db
-     ensureDBTable db table
+     ensureDBTable db table cols
  where
-  (db,table) = dbInfo keyPred
+  (db,(table,cols)) = dbInfo keyPred
 
 readDBHandle :: DBFile -> IO Handle
 readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
@@ -468,6 +493,7 @@ ensureDBHandle db =
  where
   addNewDBHandle dbHandles =
     do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
+       hPutAndFlush h ".separator ','"
        writeGlobal openDBHandles $ -- sort against deadlock
          insertBy ((<=) `on` fst) (db,h) dbHandles
        isTrans <- readGlobal currentlyInTransaction
@@ -480,12 +506,14 @@ unless True  _      = done
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 (f `on` g) x y = f (g x) (g y)
 
-ensureDBTable :: DBFile -> TableName -> IO ()
-ensureDBTable db table =
+ensureDBTable :: DBFile -> TableName -> [ColName] -> IO ()
+ensureDBTable db table cols =
   do dbTables <- readGlobal knownDBTables
      unless ((db,table) `elem` dbTables) $
        do h <- readDBHandle db
-          hPutAndFlush h $ "create table if not exists " ++ table ++ " (info);"
+          hPutAndFlush h $
+            "create table if not exists " ++ table ++
+            " (" ++ intercalate ", " cols ++ ");"
           writeGlobal knownDBTables $ (db,table) : dbTables
 
 knownDBTables :: Global [(DBFile,TableName)]
@@ -509,13 +537,71 @@ rollbackTransaction =
 currentlyInTransaction :: Global Bool
 currentlyInTransaction = global False Temporary
 
+-- converting arguments of a tuple to strings
+
+showTupleArgs :: a -> [String]
+showTupleArgs = splitTLC . removeOuterParens . showQTerm
+
+removeOuterParens :: String -> String
+removeOuterParens ('(':cs) = reverse . tail $ reverse cs
+
+splitTLC :: String -> [String]
+splitTLC = parse ""
+
+type Stack  = String
+
+parse :: Stack -> String -> [String]
+parse _  ""     = []
+parse st (c:cs) =
+  case (st,c:cs) of -- Curry allows ''' for '\''
+    ('\'':xs,'\'':'\'':ys) -> '\'' <: ('\'' <: parse xs ys)
+    _ -> next c st $ parse (updStack c st) cs
+
+next :: Char -> Stack -> [String] -> [String]
+next c []    xs = if c==',' then [] : xs else c <: xs
+next c (_:_) xs = c <: xs
+
+(<:) :: Char -> [String] -> [String]
+c <: []     = [[c]]
+c <: (x:xs) = (c:x):xs
+
+updStack :: Char -> Stack -> Stack
+updStack char stack =
+  case (char,stack) of
+    -- char is an escaped character
+    (_   ,'\\':xs) -> xs      -- the next character is not
+
+    -- char is the escape character
+    ('\\',     xs) -> '\\':xs -- push it on the stack
+
+    -- char is the string terminator
+    ('"' , '"':xs) -> xs      -- closes current string literal
+    ('"' , ''':xs) -> ''':xs  -- ignored inside character
+    ('"' ,     xs) -> '"':xs  -- opens a new string
+
+    -- char is the character terminator
+    (''' , ''':xs) -> xs      -- closes current character literal
+    (''' , '"':xs) -> '"':xs  -- ignored inside string
+    (''' ,     xs) -> ''':xs  -- opens a new character
+
+    -- parens and brackets
+    (_   , '"':xs) -> '"':xs  -- are ignored inside strings
+    (_   , ''':xs) -> ''':xs  -- and characters
+    ('(' ,     xs) -> '(':xs  -- new opening paren
+    (')' , '(':xs) -> xs      -- closing paren
+    ('[' ,     xs) -> '[':xs  -- opening bracket
+    (']' , '[':xs) -> xs      -- closing bracket
+
+    -- other characters don't modify the stack
+    (_   ,     xs) -> xs
+
 -- for debugging
 
 -- hPutStrLn h s =
---   do IO.hPutStrLn stderr $ "> " ++ s
+--   do IO.hPutStrLn stderr $ " > " ++ s
 --      IO.hPutStrLn h s
 
 -- hGetLine h =
 --   do l <- IO.hGetLine h
---      IO.hPutStrLn stderr $ "< " ++ l
+--      IO.hPutStrLn stderr $ "<  " ++ l
 --      return l

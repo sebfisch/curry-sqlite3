@@ -46,7 +46,7 @@ The following program shows how to use this library.
     import KeyDatabaseSQLite
     
     hello :: Int -> String -> Dynamic
-    hello = persistentSQLite "hello.db" "hello"
+    hello = persistentSQLite "hello.db" "hello" ["hello"]
     
     main :: IO ()
     main = do
@@ -64,13 +64,15 @@ Compared with using `KeyDatabase` there are three main differences:
 
   * the program ends with a call to the function `closeDBHandles`.
 
-The parameters of the `persistentSQLite` function are the names of
-the database file and of the table to store the facts in,
-respectively. The call to `closeDBHandles` closes the handle to the
-`hello.db` database before the program exits. Calling `closeDBHandles`
-might not be necessary if handles are closed automatically after the
-program exits, but it is useful to close a database connection earlier
-in case the program does other things after accessing the database.
+The parameters of the `persistentSQLite` function are the names of the
+database file, of the table to store the facts in, and of the columns
+of that table respectively. You can specify multiple colums if the
+second argument of the predicate is a tuple with a matching arity. The
+call to `closeDBHandles` closes the handle to the `hello.db` database
+before the program exits. Calling `closeDBHandles` might not be
+necessary if handles are closed automatically after the program exits,
+but it is useful to close a database connection earlier in case the
+program does other things after accessing the database.
 
 The above program stores the string `"Hello, echo!"` in the table
 `hello` associated with the `hello` predicate, retrieves the stored
