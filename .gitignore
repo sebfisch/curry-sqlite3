@@ -4,3 +4,4 @@ doc
 test.db
 bugs.curry
 hello.curry
+*.db-journal

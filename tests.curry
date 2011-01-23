@@ -188,8 +188,7 @@ runTest label t =
 
 test :: Test -> IO ()
 test execTest = 
-  do ensureDBFor testPred
-     runT $ cleanDB testPred
+  do runT $ cleanDB testPred
      execTest >>= maybe (hPutStrLn stderr "passes") (hPutStrLn stderr)
 
 main :: IO ()

@@ -26,8 +26,7 @@
 --- Compared with the interface of <code>KeyDatabase</code>, this module
 --- lacks definitions for <code>index</code>, <code>sortByIndex</code>,
 --- <code>groupByIndex</code>, and <code>runTNA</code> and adds the
---- functions <code>deleteDBEntries</code>,
---- <code>ensureDBFor</code>, and <code>closeDBHandles</code>.
+--- functions <code>deleteDBEntries</code> and <code>closeDBHandles</code>.
 ---
 --- @author Sebastian Fischer
 --- @version January 2011
@@ -41,7 +40,7 @@ module KeyDatabaseSQLite3 (
   returnT, doneT, errorT, failT, (|>>=), (|>>),
   sequenceT, sequenceT_, mapT, mapT_,
 
-  Dynamic, persistentSQLite3, ensureDBFor, closeDBHandles,
+  Dynamic, persistentSQLite3, closeDBHandles,
 
   existsDBKey,
 
@@ -55,7 +54,7 @@ module KeyDatabaseSQLite3 (
 
 import Database     ( TError(..), TErrorKind(..), showTError )
 import Global       ( Global, GlobalSpec(..), global, readGlobal, writeGlobal )
-import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose )
+import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose, stderr )
 import IOExts       ( connectToCommand )
 import List         ( intersperse, insertBy )
 import Maybe        ( mapMaybe )
@@ -113,14 +112,14 @@ unTrans (Trans action) = action
 ---
 runT :: Transaction a -> IO (Either a TError)
 runT trans =
-  do withAllDBHandles (`hPutAndFlush` "begin immediate;")
+  do beginTransaction
      result <- catchTrans $ unTrans trans
      case result of
        Error err ->
-         do withAllDBHandles (`hPutAndFlush` "rollback;")
+         do rollbackTransaction
             return (Right err)
        OK res ->
-         do withAllDBHandles (`hPutAndFlush` "commit;")
+         do commitTransaction
             return (Left res)
 
 catchTrans :: IO (TransResult a) -> IO (TransResult a)
@@ -248,17 +247,6 @@ tableName = snd . dbInfo
 persistentSQLite3 :: DBFile -> TableName -> KeyPred a
 persistentSQLite3 db table _ _ = DBInfo db table
 
---- Initializes the database and table for the given predicate. This
---- function must be called before the database for this predicate is
---- accessed and before a transaction that uses this predicate is
---- started.
-ensureDBFor :: KeyPred _ -> IO ()
-ensureDBFor keyPred =
-  do ensureDBHandle db
-     ensureDBTable db table
- where
-  (db,table) = dbInfo keyPred
-
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
 existsDBKey keyPred key = Query $
@@ -373,9 +361,9 @@ cleanDB keyPred = modify keyPred "delete from" ""
 -- the following: a modification, a selection of a numeric aggregate,
 -- or a selection of rows.
 
-sqlite3 :: DBFile -> String -> IO Handle
-sqlite3 db sql =
-  do h <- getDBHandle db
+sqlite3 :: KeyPred _ -> String -> IO Handle
+sqlite3 keyPred sql =
+  do h <- getDBHandle keyPred
      hPutAndFlush h $ sql ++ ";"
      return h
 
@@ -384,13 +372,13 @@ hPutAndFlush h s = hPutStrLn h s >> hFlush h
 
 modify :: KeyPred _ -> String -> String -> Transaction ()
 modify keyPred before after = transIO $
-  do sqlite3 (dbFile keyPred) $
+  do sqlite3 keyPred $
        before ++ " " ++ tableName keyPred ++ " " ++ after
      done
 
 selectInt :: KeyPred _ -> String -> String -> IO Int
 selectInt keyPred aggr cond =
-  do h <- sqlite3 (dbFile keyPred) $
+  do h <- sqlite3 keyPred $
        "select distinct " ++ aggr ++
        " from " ++ tableName keyPred ++ " " ++ cond
      hGetLine h >>= readIntOrExit
@@ -412,7 +400,7 @@ type Row = String
 
 selectRows :: KeyPred _ -> String -> String -> IO [Row]
 selectRows keyPred cols cond =
-  do h <- sqlite3 (dbFile keyPred) "select hex(randomblob(8))"
+  do h <- sqlite3 keyPred "select hex(randomblob(8))"
      rnd <- hGetLine h -- 8 random bytes = 16 random hex chars
      hPutAndFlush h $
        "select " ++ cols ++ " from " ++ tableName keyPred ++
@@ -427,14 +415,45 @@ hGetLinesBefore h stop =
        else do rest <- hGetLinesBefore h stop
                return (line : rest)
 
+--- Closes all database connections. Should be called when no more
+--- database access will be necessary.
+closeDBHandles :: IO ()
+closeDBHandles =
+  do withAllDBHandles hClose
+     writeGlobal openDBHandles []
+
 -- helper functions and globbaly stored information
 
-ensureDBTable :: DBFile -> TableName -> IO ()
-ensureDBTable db table =
-  do sqlite3 db $ "create table if not exists " ++ table ++
-                  " (key integer primary key asc autoincrement," ++
-                  "  info not null)"
-     done
+dbError :: TErrorKind -> String -> IO a
+dbError kind msg =
+  do writeGlobal lastQueryError . Just $ TError kind msg
+     error $ show kind ++ ": " ++ msg
+
+lastQueryError :: Global (Maybe TError)
+lastQueryError = global Nothing Temporary
+
+getDBHandle :: KeyPred _ -> IO Handle
+getDBHandle keyPred = 
+  do ensureDBFor keyPred
+     readDBHandle $ dbFile keyPred
+
+-- Initializes the database and table for the given predicate. This
+-- function must be called before the database for this predicate is
+-- accessed and before a transaction that uses this predicate is
+-- started.
+ensureDBFor :: KeyPred _ -> IO ()
+ensureDBFor keyPred =
+  do ensureDBHandle db
+     ensureDBTable db table
+ where
+  (db,table) = dbInfo keyPred
+
+readDBHandle :: DBFile -> IO Handle
+readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
+ where
+  err = dbError ExecutionError $ unlines
+    ["no handle for " ++ db,
+     "call ensureDBFor for the corresponding predicate"]
 
 openDBHandles :: Global [(DBFile,Handle)]
 openDBHandles = global [] Temporary
@@ -444,39 +463,64 @@ withAllDBHandles f =
   do dbHandles <- readGlobal openDBHandles
      mapIO_ (f . snd) dbHandles
 
---- Closes all database connections. Should be called when no more
---- database access will be necessary.
-closeDBHandles :: IO ()
-closeDBHandles =
-  do withAllDBHandles hClose
-     writeGlobal openDBHandles []
-
 ensureDBHandle :: DBFile -> IO ()
 ensureDBHandle db =
   do dbHandles <- readGlobal openDBHandles
-     if db `elem` map fst dbHandles
-       then done
-       else addNewDBHandle dbHandles
+     unless (db `elem` map fst dbHandles) $ addNewDBHandle dbHandles
  where
   addNewDBHandle dbHandles =
     do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
        writeGlobal openDBHandles $ -- sort against deadlock
          insertBy ((<=) `on` fst) (db,h) dbHandles
+       isTrans <- readGlobal currentlyInTransaction
+       unless (not isTrans) $ hPutStrLn h "begin immediate;"
 
-getDBHandle :: DBFile -> IO Handle
-getDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
- where
-  err = dbError ExecutionError $ unlines
-    ["no handle for " ++ db,
-     "call ensureDBFor for the corresponding predicate"]
+unless :: Bool -> IO () -> IO ()
+unless False action = action
+unless True  _      = done
 
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 (f `on` g) x y = f (g x) (g y)
 
-lastQueryError :: Global (Maybe TError)
-lastQueryError = global Nothing Temporary
+ensureDBTable :: DBFile -> TableName -> IO ()
+ensureDBTable db table =
+  do dbTables <- readGlobal knownDBTables
+     unless ((db,table) `elem` dbTables) $
+       do h <- readDBHandle db
+          hPutAndFlush h $
+            "create table if not exists " ++ table ++
+            " (key integer primary key asc autoincrement," ++
+            "  info not null);"
+          writeGlobal knownDBTables $ (db,table) : dbTables
 
-dbError :: TErrorKind -> String -> IO a
-dbError kind msg =
-  do writeGlobal lastQueryError . Just $ TError kind msg
-     error $ show kind ++ ": " ++ msg
+knownDBTables :: Global [(DBFile,TableName)]
+knownDBTables = global [] Temporary
+
+beginTransaction :: IO ()
+beginTransaction =
+  do writeGlobal currentlyInTransaction True
+     withAllDBHandles (`hPutAndFlush` "begin immediate;")
+
+commitTransaction :: IO ()
+commitTransaction =
+  do withAllDBHandles (`hPutAndFlush` "commit;")
+     writeGlobal currentlyInTransaction False
+
+rollbackTransaction :: IO ()
+rollbackTransaction =
+  do withAllDBHandles (`hPutAndFlush` "rollback;")
+     writeGlobal currentlyInTransaction False
+
+currentlyInTransaction :: Global Bool
+currentlyInTransaction = global False Temporary
+
+-- for debugging
+
+-- hPutStrLn h s =
+--   do IO.hPutStrLn stderr $ "> " ++ s
+--      IO.hPutStrLn h s
+
+-- hGetLine h =
+--   do l <- IO.hGetLine h
+--      IO.hPutStrLn stderr $ "< " ++ l
+--      return l
