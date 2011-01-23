@@ -14,7 +14,7 @@ This version uses a database format that is incompatible with previous
 versions and the names in the inface don't mention SQLite's version.
 
   * keys are not represented explicitly in the database
-  * module was to `KeyDatabaseSQLite`
+  * module was renamed to `KeyDatabaseSQLite`
   * `persistentSQLite3` was renamed to `persistentSQLite`
 
 0.2
