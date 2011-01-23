@@ -57,7 +57,6 @@ import Global       ( Global, GlobalSpec(..), global, readGlobal, writeGlobal )
 import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose, stderr )
 import IOExts       ( connectToCommand )
 import List         ( intersperse, insertBy )
-import Maybe        ( mapMaybe )
 import ReadNumeric  ( readInt )
 import ReadShowTerm ( readQTerm, showQTerm, readsQTerm )
 
