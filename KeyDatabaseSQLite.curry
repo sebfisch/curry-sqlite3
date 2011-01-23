@@ -299,7 +299,7 @@ getDBInfo keyPred key = Query $
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys = Query $
   do rows <- selectRows keyPred "rowid,*" $
-               "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
+               "where rowid in (" ++ intercalate ", " (map show keys) ++ ")"
      sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
@@ -322,7 +322,7 @@ deleteDBEntry keyPred key =
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
-    "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
+    "where rowid in (" ++ intercalate ", " (map show keys) ++ ")"
 
 --- Updates the information stored under the given key. The
 --- transaction is aborted with a <code>KeyNotExistsError</code> if
@@ -331,8 +331,15 @@ updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
-    ("set info = " ++ quote (showQTerm info) ++
+    ("set " ++ intercalate ", " (colVals keyPred info) ++
      " where rowid = " ++ show key)
+
+colVals :: KeyPred a -> a -> [String]
+colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
+ where
+  cols = colNames keyPred
+  vals | null $ tail cols = [showQTerm info]
+       | otherwise        = showTupleArgs info
 
 errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
 errorUnlessKeyExists keyPred key msg =
@@ -351,8 +358,11 @@ quote s = "'" ++ concatMap quoteChar s ++ "'"
 newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
-    ("values (" ++ quote (showQTerm info) ++ ")") |>>
+    ("values (" ++ intercalate ", " (map quote vals) ++ ")") |>>
   getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
+ where
+  vals | null . tail $ colNames keyPred = [showQTerm info]
+       | otherwise = showTupleArgs info
 
 --- Deletes all entries from the database associated with a predicate.
 cleanDB :: KeyPred _ -> Transaction ()
@@ -448,9 +458,9 @@ getDBHandle keyPred =
 ensureDBFor :: KeyPred _ -> IO ()
 ensureDBFor keyPred =
   do ensureDBHandle db
-     ensureDBTable db table
+     ensureDBTable db table cols
  where
-  (db,(table,_)) = dbInfo keyPred
+  (db,(table,cols)) = dbInfo keyPred
 
 readDBHandle :: DBFile -> IO Handle
 readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
@@ -485,12 +495,14 @@ unless True  _      = done
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 (f `on` g) x y = f (g x) (g y)
 
-ensureDBTable :: DBFile -> TableName -> IO ()
-ensureDBTable db table =
+ensureDBTable :: DBFile -> TableName -> [ColName] -> IO ()
+ensureDBTable db table cols =
   do dbTables <- readGlobal knownDBTables
      unless ((db,table) `elem` dbTables) $
        do h <- readDBHandle db
-          hPutAndFlush h $ "create table if not exists " ++ table ++ " (info);"
+          hPutAndFlush h $
+            "create table if not exists " ++ table ++
+            " (" ++ intercalate ", " cols ++ ");"
           writeGlobal knownDBTables $ (db,table) : dbTables
 
 knownDBTables :: Global [(DBFile,TableName)]
@@ -514,14 +526,72 @@ rollbackTransaction =
 currentlyInTransaction :: Global Bool
 currentlyInTransaction = global False Temporary
 
+-- converting arguments of a tuple to strings
+
+showTupleArgs :: a -> [String]
+showTupleArgs = splitTLC . removeOuterParens . showQTerm
+
+removeOuterParens :: String -> String
+removeOuterParens ('(':cs) = reverse . tail $ reverse cs
+
+splitTLC :: String -> [String]
+splitTLC = parse ""
+
+type Stack  = String
+
+parse :: Stack -> String -> [String]
+parse _  ""     = []
+parse st (c:cs) =
+  case (st,c:cs) of -- Curry allows ''' for '\''
+    ('\'':xs,'\'':'\'':ys) -> '\'' <: ('\'' <: parse xs ys)
+    _ -> next c st $ parse (updStack c st) cs
+
+next :: Char -> Stack -> [String] -> [String]
+next c []    xs = if c==',' then [] : xs else c <: xs
+next c (_:_) xs = c <: xs
+
+(<:) :: Char -> [String] -> [String]
+c <: []     = [[c]]
+c <: (x:xs) = (c:x):xs
+
+updStack :: Char -> Stack -> Stack
+updStack char stack =
+  case (char,stack) of
+    -- char is an escaped character
+    (_   ,'\\':xs) -> xs      -- the next character is not
+
+    -- char is the escape character
+    ('\\',     xs) -> '\\':xs -- push it on the stack
+
+    -- char is the string terminator
+    ('"' , '"':xs) -> xs      -- closes current string literal
+    ('"' , ''':xs) -> ''':xs  -- ignored inside character
+    ('"' ,     xs) -> '"':xs  -- opens a new string
+
+    -- char is the character terminator
+    (''' , ''':xs) -> xs      -- closes current character literal
+    (''' , '"':xs) -> '"':xs  -- ignored inside string
+    (''' ,     xs) -> ''':xs  -- opens a new character
+
+    -- parens and brackets
+    (_   , '"':xs) -> '"':xs  -- are ignored inside strings
+    (_   , ''':xs) -> ''':xs  -- and characters
+    ('(' ,     xs) -> '(':xs  -- new opening paren
+    (')' , '(':xs) -> xs      -- closing paren
+    ('[' ,     xs) -> '[':xs  -- opening bracket
+    (']' , '[':xs) -> xs      -- closing bracket
+
+    -- other characters don't modify the stack
+    (_   ,     xs) -> xs
+
 -- for debugging
 
 -- hPutStrLn h s =
---   do IO.hPutStrLn stderr $ "> " ++ s
+--   do IO.hPutStrLn stderr $ " > " ++ s
 --      IO.hPutStrLn h s
 
 -- hGetLine h =
 --   do l <- IO.hGetLine h
---      IO.hPutStrLn stderr $ "< " ++ l
+--      IO.hPutStrLn stderr $ "<  " ++ l
 --      return l
 
