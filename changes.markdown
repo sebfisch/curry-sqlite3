@@ -11,7 +11,8 @@ Changes in curry-sqlite3
 ---
 
 This version uses a database format that is incompatible with previous
-versions and the names in the inface don't mention SQLite's version.
+versions and the names in the interface don't mention SQLite's
+version.
 
   * keys are not represented explicitly in the database
   * module was renamed to `KeyDatabaseSQLite`
