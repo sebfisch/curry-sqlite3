@@ -1,4 +1,4 @@
-doc/KeyDatabaseSQLite3.html: KeyDatabaseSQLite3.curry
+doc/KeyDatabaseSQLite.html: KeyDatabaseSQLite.curry
 	currydoc --html doc $<
 
 .PHONY tests:

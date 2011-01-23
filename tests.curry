@@ -1,9 +1,9 @@
 import IO
-import KeyDatabaseSQLite3
-import List ( sortBy ); sort = sortBy (<)
+import KeyDatabaseSQLite
+import List ( sortBy ); sort = sortBy (<=)
 
 testPred :: Int -> String -> Dynamic
-testPred = persistentSQLite3 "test.db" "test"
+testPred = persistentSQLite "test.db" "test"
 
 test'notExists :: Test
 test'notExists = existsDBKey testPred 0 `qYields` False

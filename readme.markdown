@@ -88,12 +88,13 @@ stored in the database.
 
     # sqlite3 hello.db
     sqlite> select * from hello;
-    1|"Hello, echo!"
-    2|"Hello, echo!"
+    "Hello, echo!"
+    "Hello, echo!"
     sqlite> .q
 
 The value is stored twice under different keys, because we have
-executed `main` twice.
+executed `main` twice. The associated keys are not stored explicitly
+in the database but handled internally.
 
 The values are stored in the database using a string representation
 that can be parsed using the [`readQTerm`] function.

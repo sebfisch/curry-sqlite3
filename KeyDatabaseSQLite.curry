@@ -16,7 +16,7 @@
 --- to use this module instead by replacing the imports of
 --- <code>Dynamic</code>, <code>Database</code>, and
 --- <code>KeyDatabase</code> with this module and changing the declarations
---- of database predicates to use the function <code>persistentSQLite3</code>
+--- of database predicates to use the function <code>persistentSQLite</code>
 --- instead of <code>dynamic</code> or <code>persistent</code>.
 --- This module redefines the types <code>Dynamic</code>,
 --- <code>Query</code>, and <code>Transaction</code> and although both
@@ -32,7 +32,7 @@
 --- @version January 2011
 ------------------------------------------------------------------------------
 
-module KeyDatabaseSQLite3 (
+module KeyDatabaseSQLite (
 
   Query, runQ, transformQ, getDB,
 
@@ -40,7 +40,7 @@ module KeyDatabaseSQLite3 (
   returnT, doneT, errorT, failT, (|>>=), (|>>),
   sequenceT, sequenceT_, mapT, mapT_,
 
-  Dynamic, persistentSQLite3, closeDBHandles,
+  Dynamic, persistentSQLite, closeDBHandles,
 
   existsDBKey,
 
@@ -244,34 +244,34 @@ tableName = snd . dbInfo
 ---
 --- @param dbFile - the name of a database file
 --- @param tableName - the name of a database table
-persistentSQLite3 :: DBFile -> TableName -> KeyPred a
-persistentSQLite3 db table _ _ = DBInfo db table
+persistentSQLite :: DBFile -> TableName -> KeyPred a
+persistentSQLite db table _ _ = DBInfo db table
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
 existsDBKey keyPred key = Query $
-  do n <- selectInt keyPred "count(*)" $ "where key = " ++ show key
+  do n <- selectInt keyPred "count(*)" $ "where rowid = " ++ show key
      return $! n > 0
 
 --- Returns a list of all stored keys. Do not use this function unless
 --- the database is small.
 allDBKeys :: KeyPred _ -> Query [Key]
 allDBKeys keyPred = Query $
-  do rows <- selectRows keyPred "key" ""
+  do rows <- selectRows keyPred "rowid" ""
      mapIO readIntOrExit rows
 
 --- Returns a list of all info parts of stored entries. Do not use this
 --- function unless the database is small.
 allDBInfos :: KeyPred a -> Query [a]
 allDBInfos keyPred = Query $
-  do rows <- selectRows keyPred "info" ""
+  do rows <- selectRows keyPred "*" ""
      return $!! map readQTerm rows
 
 --- Returns a list of all stored entries. Do not use this function
 --- unless the database is small.
 allDBKeyInfos :: KeyPred a -> Query [(Key,a)]
 allDBKeyInfos keyPred = Query $
-  do rows <- selectRows keyPred "*" ""
+  do rows <- selectRows keyPred "rowid,*" ""
      mapIO readKeyInfo rows
 
 readKeyInfo :: String -> IO (Key,a)
@@ -285,7 +285,7 @@ readKeyInfo row =
 --- run-time error if the given key is not present.
 getDBInfo :: KeyPred a -> Key -> Query a
 getDBInfo keyPred key = Query $
-  do rows <- selectRows keyPred "info" $ "where key = " ++ show key
+  do rows <- selectRows keyPred "*" $ "where rowid = " ++ show key
      readHeadOrExit rows
  where
   readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
@@ -294,8 +294,8 @@ getDBInfo keyPred key = Query $
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys = Query $
-  do rows <- selectRows keyPred "*" $
-               "where key in (" ++ intercalate "," (map show keys) ++ ")"
+  do rows <- selectRows keyPred "rowid,*" $
+               "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
      sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
@@ -311,14 +311,14 @@ intercalate l = concat . intersperse l
 --- error is raised.
 deleteDBEntry :: KeyPred _ -> Key -> Transaction ()
 deleteDBEntry keyPred key =
-  modify keyPred "delete from" $ "where key = " ++ show key
+  modify keyPred "delete from" $ "where rowid = " ++ show key
 
 --- Deletes the information stored under the given keys. No error is
 --- raised if (some of) the keys do not exist.
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
-    "where key in (" ++ intercalate "," (map show keys) ++ ")"
+    "where rowid in (" ++ intercalate "," (map show keys) ++ ")"
 
 --- Updates the information stored under the given key. The
 --- transaction is aborted with a <code>KeyNotExistsError</code> if
@@ -328,7 +328,7 @@ updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
     ("set info = " ++ quote (showQTerm info) ++
-     " where key = " ++ show key)
+     " where rowid = " ++ show key)
 
 errorUnlessKeyExists :: KeyPred a -> Key -> String -> Transaction ()
 errorUnlessKeyExists keyPred key msg =
@@ -347,7 +347,7 @@ quote s = "'" ++ concatMap quoteChar s ++ "'"
 newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
-    ("(info) values (" ++ quote (showQTerm info) ++ ")") |>>
+    ("values (" ++ quote (showQTerm info) ++ ")") |>>
   getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
 
 --- Deletes all entries from the database associated with a predicate.
@@ -451,9 +451,7 @@ ensureDBFor keyPred =
 readDBHandle :: DBFile -> IO Handle
 readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
  where
-  err = dbError ExecutionError $ unlines
-    ["no handle for " ++ db,
-     "call ensureDBFor for the corresponding predicate"]
+  err = dbError ExecutionError $ "no handle for " ++ db
 
 openDBHandles :: Global [(DBFile,Handle)]
 openDBHandles = global [] Temporary
@@ -487,10 +485,7 @@ ensureDBTable db table =
   do dbTables <- readGlobal knownDBTables
      unless ((db,table) `elem` dbTables) $
        do h <- readDBHandle db
-          hPutAndFlush h $
-            "create table if not exists " ++ table ++
-            " (key integer primary key asc autoincrement," ++
-            "  info not null);"
+          hPutAndFlush h $ "create table if not exists " ++ table ++ " (info);"
           writeGlobal knownDBTables $ (db,table) : dbTables
 
 knownDBTables :: Global [(DBFile,TableName)]
@@ -516,11 +511,11 @@ currentlyInTransaction = global False Temporary
 
 -- for debugging
 
--- hPutStrLn h s =
---   do IO.hPutStrLn stderr $ "> " ++ s
---      IO.hPutStrLn h s
+hPutStrLn h s =
+  do IO.hPutStrLn stderr $ "> " ++ s
+     IO.hPutStrLn h s
 
--- hGetLine h =
---   do l <- IO.hGetLine h
---      IO.hPutStrLn stderr $ "< " ++ l
---      return l
+hGetLine h =
+  do l <- IO.hGetLine h
+     IO.hPutStrLn stderr $ "< " ++ l
+     return l
