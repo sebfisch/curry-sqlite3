@@ -50,7 +50,6 @@ The following program shows how to use this library.
     
     main :: IO ()
     main = do
-        ensureDBFor hello
         let info = "Hello, echo!"
         res <- runJustT (newDBEntry hello info |>>= getDB . getDBInfo hello)
         putStrLn res
@@ -63,8 +62,7 @@ Compared with using `KeyDatabase` there are three main differences:
   * instead of `persistent`, the function `persistentSQLite3` is used
     to define the persistent predicate `hello`, and
 
-  * the program is wrapped in calls to the functions `ensureDBFor` and
-    `closeDBHandles`.
+  * the program ends with a call to the function `closeDBHandles`.
 
 The parameters of the `persistentSQLite3` function are the names of
 the database file and of the table to store the facts in,
