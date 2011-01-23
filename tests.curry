@@ -3,7 +3,7 @@ import KeyDatabaseSQLite
 import List ( sortBy ); sort = sortBy (<=)
 
 testPred :: Int -> String -> Dynamic
-testPred = persistentSQLite "test.db" "test"
+testPred = persistentSQLite "test.db" "test" ["test"]
 
 test'notExists :: Test
 test'notExists = existsDBKey testPred 0 `qYields` False

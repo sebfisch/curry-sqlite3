@@ -209,22 +209,20 @@ mapT_ f = sequenceT_ . map f
 
 -- Interface based on keys
 
---- The name of the database file.
 type DBFile = String
-
---- The name of the database table in which a predicate is stored.
 type TableName = String
+type ColName = String
 
 --- Result type of database predicates.
-data Dynamic = DBInfo DBFile TableName
+data Dynamic = DBInfo DBFile TableName [ColName]
 
 type Key = Int
 type KeyPred a = Key -> a -> Dynamic -- for interface compatibility
 
-dbInfo :: KeyPred a -> (DBFile,TableName)
-dbInfo keyPred = (db,table)
+dbInfo :: KeyPred a -> (DBFile,(TableName,[ColName]))
+dbInfo keyPred = (db,(table,cols))
  where
-  DBInfo db table = keyPred ignored ignored
+  DBInfo db table cols = keyPred ignored ignored
 
 ignored :: a
 ignored = error "unexpected access to argument of database predicate"
@@ -233,7 +231,10 @@ dbFile :: KeyPred _ -> DBFile
 dbFile = fst . dbInfo
 
 tableName :: KeyPred _ -> TableName
-tableName = snd . dbInfo
+tableName = fst . snd . dbInfo
+
+colNames :: KeyPred _ -> [ColName]
+colNames = snd . snd . dbInfo
 
 --- This function is used instead of <code>dynamic</code> or
 --- <code>persistent</code> to declare predicates whose facts are stored
@@ -244,8 +245,8 @@ tableName = snd . dbInfo
 ---
 --- @param dbFile - the name of a database file
 --- @param tableName - the name of a database table
-persistentSQLite :: DBFile -> TableName -> KeyPred a
-persistentSQLite db table _ _ = DBInfo db table
+persistentSQLite :: DBFile -> TableName -> [ColName] -> KeyPred a
+persistentSQLite db table cols _ _ = DBInfo db table cols
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
@@ -265,7 +266,10 @@ allDBKeys keyPred = Query $
 allDBInfos :: KeyPred a -> Query [a]
 allDBInfos keyPred = Query $
   do rows <- selectRows keyPred "*" ""
-     return $!! map readQTerm rows
+     return $!! map readInfo rows
+
+readInfo :: String -> a
+readInfo str = readQTerm $ "(" ++ str ++ ")"
 
 --- Returns a list of all stored entries. Do not use this function
 --- unless the database is small.
@@ -277,9 +281,9 @@ allDBKeyInfos keyPred = Query $
 readKeyInfo :: String -> IO (Key,a)
 readKeyInfo row =
   do key <- readIntOrExit keyStr
-     return $!! (key, readQTerm infoStr)
+     return $!! (key, readInfo infoStr)
  where
-  (keyStr,_:infoStr) = break ('|'==) row
+  (keyStr,_:infoStr) = break (','==) row
 
 --- Queries the information stored under the given key. Causes a
 --- run-time error if the given key is not present.
@@ -289,7 +293,7 @@ getDBInfo keyPred key = Query $
      readHeadOrExit rows
  where
   readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
-  readHeadOrExit (x:_) = return $!! readQTerm x
+  readHeadOrExit (x:_) = return $!! readInfo x
 
 --- Queries the information stored under the given keys.
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
@@ -340,7 +344,7 @@ errorUnlessKeyExists keyPred key msg =
 quote :: String -> String
 quote s = "'" ++ concatMap quoteChar s ++ "'"
  where
-  quoteChar c = if c == ''' then ['\\','''] else [c]
+  quoteChar c = if c == ''' then "''" else [c]
 
 --- Stores new information in the database and yields the newly
 --- generated key.
@@ -446,7 +450,7 @@ ensureDBFor keyPred =
   do ensureDBHandle db
      ensureDBTable db table
  where
-  (db,table) = dbInfo keyPred
+  (db,(table,_)) = dbInfo keyPred
 
 readDBHandle :: DBFile -> IO Handle
 readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
@@ -468,6 +472,7 @@ ensureDBHandle db =
  where
   addNewDBHandle dbHandles =
     do h <- connectToCommand $ path'to'sqlite3 ++ " " ++ db
+       hPutAndFlush h ".separator ','"
        writeGlobal openDBHandles $ -- sort against deadlock
          insertBy ((<=) `on` fst) (db,h) dbHandles
        isTrans <- readGlobal currentlyInTransaction
@@ -511,11 +516,12 @@ currentlyInTransaction = global False Temporary
 
 -- for debugging
 
-hPutStrLn h s =
-  do IO.hPutStrLn stderr $ "> " ++ s
-     IO.hPutStrLn h s
+-- hPutStrLn h s =
+--   do IO.hPutStrLn stderr $ "> " ++ s
+--      IO.hPutStrLn h s
 
-hGetLine h =
-  do l <- IO.hGetLine h
-     IO.hPutStrLn stderr $ "< " ++ l
-     return l
+-- hGetLine h =
+--   do l <- IO.hGetLine h
+--      IO.hPutStrLn stderr $ "< " ++ l
+--      return l
+
