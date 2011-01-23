@@ -2,9 +2,9 @@ import IO
 
 import KeyDatabaseSQLite
 
-import Dynamic
-import Database
-import KeyDatabase
+-- import Dynamic
+-- import Database
+-- import KeyDatabase
 
 import List ( sortBy ); sort = sortBy (<=)
 
