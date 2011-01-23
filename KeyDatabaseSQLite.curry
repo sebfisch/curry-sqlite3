@@ -310,7 +310,7 @@ getDBInfo keyPred key = Query $
 getDBInfos :: KeyPred a -> [Key] -> Query [a]
 getDBInfos keyPred keys = Query $
   do rows <- selectRows keyPred "_rowid_,*" $
-               "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
+               "where _rowid_ in (" ++ commaSep (map show keys) ++ ")"
      sortByIndexInGivenList rows
  where
   sortByIndexInGivenList rows =
@@ -319,8 +319,8 @@ getDBInfos keyPred keys = Query $
              "getDBInfos: no entry for key '" ++ show key ++ "'"
        mapIO (\key -> maybe (err key) return (lookup key keyInfos)) keys
 
-intercalate :: [a] -> [[a]] -> [a]
-intercalate l = concat . intersperse l
+commaSep :: [String] -> String
+commaSep = concat . intersperse ", "
 
 --- Deletes the information stored under the given key. If the given
 --- key does not exist this transaction is silently ignored and no
@@ -334,7 +334,7 @@ deleteDBEntry keyPred key =
 deleteDBEntries :: KeyPred _ -> [Key] -> Transaction ()
 deleteDBEntries keyPred keys =
   modify keyPred "delete from" $
-    "where _rowid_ in (" ++ intercalate ", " (map show keys) ++ ")"
+    "where _rowid_ in (" ++ commaSep (map show keys) ++ ")"
 
 --- Updates the information stored under the given key. The
 --- transaction is aborted with a <code>KeyNotExistsError</code> if
@@ -343,7 +343,7 @@ updateDBEntry :: KeyPred a -> Key -> a -> Transaction ()
 updateDBEntry keyPred key info =
   errorUnlessKeyExists keyPred key ("updateDBEntry, " ++ show key) |>>
   modify keyPred "update"
-    ("set " ++ intercalate ", " (colVals keyPred info) ++
+    ("set " ++ commaSep (colVals keyPred info) ++
      " where _rowid_ = " ++ show key)
 
 colVals :: KeyPred a -> a -> [String]
@@ -370,7 +370,7 @@ quote s = "'" ++ concatMap quoteChar s ++ "'"
 newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
-    ("values (" ++ intercalate ", " (map quote vals) ++ ")") |>>
+    ("values (" ++ commaSep (map quote vals) ++ ")") |>>
   getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
  where
   vals | null . tail $ colNames keyPred = [showQTerm info]
@@ -515,7 +515,7 @@ ensureDBTable db table cols =
        do h <- readDBHandle db
           hPutAndFlush h $
             "create table if not exists " ++ table ++
-            " (" ++ intercalate ", " cols ++ ");"
+            " (" ++ commaSep cols ++ ");"
           writeGlobal knownDBTables $ (db,table) : dbTables
 
 knownDBTables :: Global [(DBFile,TableName)]
