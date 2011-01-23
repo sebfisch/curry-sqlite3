@@ -66,13 +66,11 @@ Compared with using `KeyDatabase` there are three main differences:
 
 The parameters of the `persistentSQLite3` function are the names of
 the database file and of the table to store the facts in,
-respectively. The call to `ensureDBFor` creates the database
-`hello.db` and in it the table `hello` if they do not exist yet and
-`closeDBHandles` closes the handle to the `hello.db` database before
-the program exits. Calling `closeDBHandles` might not be necessary if
-handles are closed automatically after the program exits, but it is
-useful to close a database connection earlier in case the program does
-other things after accessing the database.
+respectively. The call to `closeDBHandles` closes the handle to the
+`hello.db` database before the program exits. Calling `closeDBHandles`
+might not be necessary if handles are closed automatically after the
+program exits, but it is useful to close a database connection earlier
+in case the program does other things after accessing the database.
 
 The above program stores the string `"Hello, echo!"` in the table
 `hello` associated with the `hello` predicate, retrieves the stored
