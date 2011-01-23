@@ -449,7 +449,7 @@ closeDBHandles =
   do withAllDBHandles hClose
      writeGlobal openDBHandles []
 
--- helper functions and globbaly stored information
+-- helper functions and globaly stored information
 
 dbError :: TErrorKind -> String -> IO a
 dbError kind msg =
