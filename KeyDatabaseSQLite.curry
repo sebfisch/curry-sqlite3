@@ -511,11 +511,11 @@ currentlyInTransaction = global False Temporary
 
 -- for debugging
 
-hPutStrLn h s =
-  do IO.hPutStrLn stderr $ "> " ++ s
-     IO.hPutStrLn h s
+-- hPutStrLn h s =
+--   do IO.hPutStrLn stderr $ "> " ++ s
+--      IO.hPutStrLn h s
 
-hGetLine h =
-  do l <- IO.hGetLine h
-     IO.hPutStrLn stderr $ "< " ++ l
-     return l
+-- hGetLine h =
+--   do l <- IO.hGetLine h
+--      IO.hPutStrLn stderr $ "< " ++ l
+--      return l
