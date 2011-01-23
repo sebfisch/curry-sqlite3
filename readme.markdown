@@ -43,10 +43,10 @@ results should be processed incrementally.
 
 The following program shows how to use this library.
 
-    import KeyDatabaseSQLite3
+    import KeyDatabaseSQLite
     
     hello :: Int -> String -> Dynamic
-    hello = persistentSQLite3 "hello.db" "hello"
+    hello = persistentSQLite "hello.db" "hello"
     
     main :: IO ()
     main = do
@@ -57,14 +57,14 @@ The following program shows how to use this library.
 
 Compared with using `KeyDatabase` there are three main differences:
 
-  * the import is `KeyDatabaseSQLite3`,
+  * the import is `KeyDatabaseSQLite`,
 
-  * instead of `persistent`, the function `persistentSQLite3` is used
+  * instead of `persistent`, the function `persistentSQLite` is used
     to define the persistent predicate `hello`, and
 
   * the program ends with a call to the function `closeDBHandles`.
 
-The parameters of the `persistentSQLite3` function are the names of
+The parameters of the `persistentSQLite` function are the names of
 the database file and of the table to store the facts in,
 respectively. The call to `closeDBHandles` closes the handle to the
 `hello.db` database before the program exits. Calling `closeDBHandles`
