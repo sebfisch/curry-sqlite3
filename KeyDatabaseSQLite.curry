@@ -303,7 +303,8 @@ getDBInfo keyPred key = Query $
   do rows <- selectRows keyPred "*" $ "where _rowid_ = " ++ show key
      readHeadOrExit rows
  where
-  readHeadOrExit []    = dbError KeyNotExistsError $ "getDBInfo, " ++ show key
+  readHeadOrExit [] = dbError KeyNotExistsError $
+    "getDBInfo: no entry for key '" ++ show key ++ "'"
   readHeadOrExit (x:_) = return $!! readInfo x
 
 --- Queries the information stored under the given keys.
@@ -315,7 +316,8 @@ getDBInfos keyPred keys = Query $
  where
   sortByIndexInGivenList rows =
     do keyInfos <- mapIO readKeyInfo rows
-       let err key = dbError KeyNotExistsError $ "getDBInfos, " ++ show key
+       let err key = dbError KeyNotExistsError $
+             "getDBInfos: no entry for key '" ++ show key ++ "'"
        mapIO (\key -> maybe (err key) return (lookup key keyInfos)) keys
 
 intercalate :: [a] -> [[a]] -> [a]
@@ -412,7 +414,8 @@ selectInt keyPred aggr cond =
 readIntOrExit :: String -> IO Int
 readIntOrExit s = maybe err (return . fst) $ readInt s
  where
-  err = dbError ExecutionError $ "readIntOrExit, " ++ show s
+  err = dbError ExecutionError $
+    "readIntOrExit: cannot parse integer from string '" ++ show s ++ "'"
 
 -- When selecting an unknown number of rows it is necessary to know
 -- when to stop. One way to be able to stop is to select 'count(*)'
@@ -452,7 +455,7 @@ closeDBHandles =
 dbError :: TErrorKind -> String -> IO a
 dbError kind msg =
   do writeGlobal lastQueryError . Just $ TError kind msg
-     error $ show kind ++ ": " ++ msg
+     error msg
 
 lastQueryError :: Global (Maybe TError)
 lastQueryError = global Nothing Temporary
@@ -476,7 +479,7 @@ ensureDBFor keyPred =
 readDBHandle :: DBFile -> IO Handle
 readDBHandle db = readGlobal openDBHandles >>= maybe err return . lookup db
  where
-  err = dbError ExecutionError $ "no handle for " ++ db
+  err = dbError ExecutionError $ "readDBHandle: no handle for '" ++ db ++ "'"
 
 openDBHandles :: Global [(DBFile,Handle)]
 openDBHandles = global [] Temporary

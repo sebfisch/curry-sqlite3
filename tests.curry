@@ -1,10 +1,17 @@
 import IO
+
 import KeyDatabaseSQLite
+
+import Dynamic
+import Database
+import KeyDatabase
+
 import List ( sortBy ); sort = sortBy (<=)
 
 testPred :: Int -> (String,Int) -> Dynamic
-testPred = persistentSQLite "test.db" "test" ["rowid","oid"]
--- column names should not conflict with the internally used _rowid_
+testPred =
+  persistentSQLite "test.db" "test" ["rowid","oid"]
+  -- dynamic
 
 test'notExists :: Test
 test'notExists = existsDBKey testPred 0 `qYields` False
@@ -21,16 +28,17 @@ test'allKeyInfosEmpty = allDBKeyInfos testPred `qYields` []
 test'infoEmpty :: Test
 test'infoEmpty =
   getDBInfo testPred 0
-    `qExitsWith` "ERROR: KeyNotExistsError: getDBInfo, 0"
+    `qExitsWith` "ERROR: getDBInfo: no entry for key '0'"
 
 test'infosEmpty :: Test
 test'infosEmpty =
   getDBInfos testPred [0,1,2]
-    `qExitsWith` "ERROR: KeyNotExistsError: getDBInfos, 0"
+    `qExitsWith` "ERROR: getDBInfos: no entry for key '0'"
 
 test'deleteKeyEmpty :: Test
 test'deleteKeyEmpty = deleteDBEntry testPred 0 `tYields` ()
 
+-- only with SQLite
 test'deleteKeysEmpty :: Test
 test'deleteKeysEmpty = deleteDBEntries testPred [0,1,2] `tYields` ()
 
@@ -96,6 +104,7 @@ test'deleteOneCreated =
    returnT (sort infos))
      `tYields` [("a",10),("c",30)]
 
+-- only with SQLite
 test'deleteAllCreated :: Test
 test'deleteAllCreated =
   (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys ->
@@ -133,34 +142,44 @@ type Test = IO (Maybe String)
 
 qYields :: Query a -> a -> Test
 query `qYields` val =
-  (runQ query >>= return . checkRes val) `catch` \ (IOError err) ->
+  (runQ query >>= checkRes val) `catch` \ (IOError err) ->
     return . Just $ unlines
       ["exits with run-time error", '\t':show err,
        "but should yield", '\t':show val]
 
-checkRes :: a -> a -> Maybe String
-checkRes val res | res == val = Nothing
-                 | otherwise  = Just $ unlines
-                     ["yields", '\t':show res,
-                      "but should yield", '\t':show val]
+checkRes :: a -> a -> IO (Maybe String)
+checkRes val x = (return . check $!! x) `catch` \ (IOError err) ->
+  return . Just $ unlines
+    ["hides run-time error in its result", '\t':show err,
+     "but should yield", '\t':show val]
+ where
+  check res | res == val = Nothing
+            | otherwise  = Just $ unlines
+                             ["yields", '\t':show res,
+                              "but should yield", '\t':show val]
 
 tYields :: Transaction a -> a -> Test
 trans `tYields` val =
   do tres <- runT trans
-     return $ case tres of
+     case tres of
        Left res  -> checkRes val res 
-       Right err -> Just $ unlines
+       Right err -> return . Just $ unlines
          ["exits with transaction error", '\t':show err,
           "but should yield", '\t':show val]
 
 qExitsWith :: Query a -> String -> Test
 query `qExitsWith` msg =
   (do res <- runQ query
-      return . Just $ unlines
-        ["yields", '\t':show res,
-         "but should exit with run-time error", '\t':show msg])
+      (check $!! res) `catch` \ (IOError err) ->
+        return . Just $ unlines
+          ["hides run-time error in its result", '\t':show err,
+           "but should exit with run-time error", '\t':show msg])
     `catch` checkError
  where
+  check res = return . Just $ unlines
+                ["yields", '\t':show res,
+                 "but should exit with run-time error", '\t':show msg]
+
   checkError (IOError err)
     | err == msg = return Nothing
     | otherwise  = return . Just $ unlines
@@ -170,17 +189,22 @@ query `qExitsWith` msg =
 tExitsWith :: Transaction a -> TErrorKind -> Test
 trans `tExitsWith` kind =
   (do tres <- runT trans
-      return $!! case tres of
-        Left res -> Just $ unlines
-          ["yields", '\t':show res,
-           "but should exit with transaction error", '\t':show kind]
-        Right err@(TError knd _) ->
-          if knd == kind then Nothing else Just $ unlines
-            ["exits with transaction error", '\t':showTError err,
-             "but should exit with error kind", '\t':show kind])
+      (return . checkError $!! tres) `catch` \ (IOError err) ->
+        return . Just $ unlines
+          ["hides run-time error in its result", '\t':show err,
+           "but should exit with transaction error of kind", '\t':show kind])
     `catch` \ (IOError err) -> return . Just $ unlines
       ["exits with run-time error", '\t':show err,
        "but should exit with transaction error of kind", '\t':show kind]
+ where
+  checkError (Left res) = Just $ unlines
+    ["yields", '\t':show res,
+     "but should exit with transaction error", '\t':show kind]
+  checkError (Right err@(TError knd _))
+    | knd == kind = Nothing
+    | otherwise = Just $ unlines
+        ["exits with transaction error", '\t':showTError err,
+         "but should exit with error kind", '\t':show kind]
 
 runTest :: String -> Test -> IO ()
 runTest label t =
@@ -201,7 +225,7 @@ main =
      runTest "infoEmpty" test'infoEmpty
      runTest "infosEmpty" test'infosEmpty
      runTest "deleteKeyEmpty" test'deleteKeyEmpty
-     runTest "deleteKeysEmpty" test'deleteKeysEmpty
+     runTest "deleteKeysEmpty" test'deleteKeysEmpty -- only with SQLite
      runTest "updateEmpty" test'updateEmpty
      runTest "createdExists" test'createdExists
      runTest "createdGoneAfterClean" test'createdGoneAfterClean
@@ -211,7 +235,7 @@ main =
      runTest "getCreatedInfo" test'getCreatedInfo
      runTest "getCreatedInfos" test'getCreatedInfos
      runTest "deleteOneCreated" test'deleteOneCreated
-     runTest "deleteAllCreated" test'deleteAllCreated
+     runTest "deleteAllCreated" test'deleteAllCreated -- only with SQLite
      runTest "updateCreated" test'updateCreated
      runTest "queryDeleted" test'queryDeleted
      runTest "queryListWithOneDeleted" test'queryListWithOneDeleted
