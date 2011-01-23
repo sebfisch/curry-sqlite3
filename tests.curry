@@ -199,7 +199,7 @@ trans `tExitsWith` kind =
  where
   checkError (Left res) = Just $ unlines
     ["yields", '\t':show res,
-     "but should exit with transaction error", '\t':show kind]
+     "but should exit with transaction error of kind", '\t':show kind]
   checkError (Right err@(TError knd _))
     | knd == kind = Nothing
     | otherwise = Just $ unlines
