@@ -255,7 +255,7 @@ colNames = snd . snd . dbInfo
 persistentSQLite :: DBFile -> TableName -> [ColName] -> KeyPred a
 persistentSQLite db table cols _ _
   | null cols = DBInfo db table ["info"]
-  | any (=="_rowid_") cols = error "columns must not be called _rowid_"
+  | "_rowid_" `elem` cols = error "columns must not be called _rowid_"
   | otherwise = DBInfo db table cols
 
 --- Checks whether the predicate has an entry with the given key.
