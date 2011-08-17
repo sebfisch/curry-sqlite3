@@ -28,8 +28,8 @@
 --- <code>groupByIndex</code>, and <code>runTNA</code> and adds the
 --- functions <code>deleteDBEntries</code> and <code>closeDBHandles</code>.
 ---
---- @author Sebastian Fischer
---- @version January 2011
+--- @author Sebastian Fischer with changes by Michael Hanus
+--- @version August 2011
 ------------------------------------------------------------------------------
 
 module KeyDatabaseSQLite (
@@ -48,17 +48,18 @@ module KeyDatabaseSQLite (
 
   getDBInfo, getDBInfos,
 
-  deleteDBEntry, deleteDBEntries, updateDBEntry, newDBEntry, cleanDB
+  deleteDBEntry, deleteDBEntries, updateDBEntry, newDBEntry, newDBKeyEntry,
+  cleanDB
 
   ) where
 
-import Database     ( TError(..), TErrorKind(..), showTError )
 import Global       ( Global, GlobalSpec(..), global, readGlobal, writeGlobal )
 import IO           ( Handle, hPutStrLn, hGetLine, hFlush, hClose, stderr )
 import IOExts       ( connectToCommand )
 import List         ( intersperse, insertBy )
 import ReadNumeric  ( readInt )
 import ReadShowTerm ( readQTerm, showQTerm, readsQTerm )
+import Maybe        ( mapMMaybe )
 
 infixl 1 |>>, |>>=
 
@@ -128,11 +129,15 @@ catchTrans action =
        writeGlobal lastQueryError Nothing
        return . Error $ maybe (TError ExecutionError msg) id err
 
---- Like <code>runT</code> but fails on transaction errors.
+--- Executes a possibly composed transaction on the current state
+--- of dynamic predicates as a single transaction.
+--- Similar to <code>runT</code> but a run-time error is raised
+--- if the execution of the transaction fails.
 runJustT :: Transaction a -> IO a
-runJustT trans =
-  do Left result <- runT trans
-     return result
+runJustT t =
+  runT t  >>=
+  return . either id
+              (\e -> error ("Transaction failed: " ++ showTError e))
 
 --- Lifts a database query to the transaction type such that it can be
 --- composed with other transactions. Run-time errors that occur
@@ -254,9 +259,9 @@ colNames = snd . snd . dbInfo
 --- @param colNames - the column names of the associated database table
 persistentSQLite :: DBFile -> TableName -> [ColName] -> KeyPred a
 persistentSQLite db table cols _ _
-  | null cols = DBInfo db table ["info"]
+  | null cols             = DBInfo db table ["info"]
   | "_rowid_" `elem` cols = error "columns must not be called _rowid_"
-  | otherwise = DBInfo db table cols
+  | otherwise             = DBInfo db table cols
 
 --- Checks whether the predicate has an entry with the given key.
 existsDBKey :: KeyPred _ -> Key -> Query Bool
@@ -295,19 +300,19 @@ readKeyInfo row =
  where
   (keyStr,_:infoStr) = break (','==) row
 
---- Queries the information stored under the given key. Causes a
---- run-time error if the given key is not present.
-getDBInfo :: KeyPred a -> Key -> Query a
+--- Queries the information stored under the given key. Yields
+--- <code>Nothing</code> if the given key is not present.
+getDBInfo :: KeyPred a -> Key -> Query (Maybe a)
 getDBInfo keyPred key = Query $
   do rows <- selectRows keyPred "*" $ "where _rowid_ = " ++ show key
-     readHeadOrExit rows
+     readHeadIfExists rows
  where
-  readHeadOrExit [] = dbError KeyNotExistsError $
-    "getDBInfo: no entry for key '" ++ show key ++ "'"
-  readHeadOrExit (x:_) = return $!! readInfo x
+  readHeadIfExists []    = return Nothing
+  readHeadIfExists (x:_) = return $!! Just (readInfo x)
 
---- Queries the information stored under the given keys.
-getDBInfos :: KeyPred a -> [Key] -> Query [a]
+--- Queries the information stored under the given keys. Yields
+--- <code>Nothing</code> if a given key is not present.
+getDBInfos :: KeyPred a -> [Key] -> Query (Maybe [a])
 getDBInfos keyPred keys = Query $
   do rows <- selectRows keyPred "_rowid_,*" $
                "where _rowid_ in (" ++ commaSep (map show keys) ++ ")"
@@ -315,9 +320,7 @@ getDBInfos keyPred keys = Query $
  where
   sortByIndexInGivenList rows =
     do keyInfos <- mapIO readKeyInfo rows
-       let err key = dbError KeyNotExistsError $
-             "getDBInfos: no entry for key '" ++ show key ++ "'"
-       mapIO (\key -> maybe (err key) return (lookup key keyInfos)) keys
+       return $ mapMMaybe (\key -> lookup key keyInfos) keys
 
 commaSep :: [String] -> String
 commaSep = concat . intersperse ", "
@@ -354,11 +357,13 @@ errorUnlessKeyExists keyPred key msg =
     else doneT
 
 colVals :: KeyPred a -> a -> [String]
-colVals keyPred info = zipWith (\c v -> c ++ " = " ++ quote v) cols vals
- where
-  cols = colNames keyPred
-  vals | null $ tail cols = [showQTerm info]
-       | otherwise        = showTupleArgs info
+colVals keyPred info =
+  zipWith (\c v -> c ++ " = " ++ v) (colNames keyPred) (infoVals keyPred info)
+
+infoVals :: KeyPred a -> a -> [String]
+infoVals keyPred info
+  | null $ colNames keyPred = [quote $ showQTerm info]
+  | otherwise               = map quote $ showTupleArgs info
 
 quote :: String -> String
 quote s = "'" ++ concatMap quoteChar s ++ "'"
@@ -370,11 +375,25 @@ quote s = "'" ++ concatMap quoteChar s ++ "'"
 newDBEntry :: KeyPred a -> a -> Transaction Key
 newDBEntry keyPred info =
   modify keyPred "insert into"
-    ("values (" ++ commaSep (map quote vals) ++ ")") |>>
+    ("values (" ++ commaSep (infoVals keyPred info) ++ ")") |>>
   getDB (Query $ selectInt keyPred "last_insert_rowid()" "")
- where
-  vals | null . tail $ colNames keyPred = [showQTerm info]
-       | otherwise = showTupleArgs info
+
+--- Stores a new entry in the database under a given key.
+--- The transaction fails if the key already exists.
+--- @param db - the database (a dynamic predicate)
+--- @param key - the key of the new entry (an integer)
+--- @param info - the information to be stored in the new entry
+newDBKeyEntry :: KeyPred a -> Key -> a -> Transaction ()
+newDBKeyEntry keyPred key info =
+  getDB (existsDBKey keyPred key) |>>= \b ->
+  if b
+   then errorT . TError DuplicateKeyError $
+                   "database already contains entry with key: " ++ show key
+   else modify keyPred "insert into"
+          ("values (" ++ commaSep (infoVals keyPred info) ++ ")") |>>
+        getDB (Query $ selectInt keyPred "last_insert_rowid()" "") |>>= \k ->
+        modify keyPred "update" $
+          "set _rowid_ = " ++ show key ++ " where _rowid_ = " ++ show k
 
 --- Deletes all entries from the database associated with a predicate.
 cleanDB :: KeyPred _ -> Transaction ()
@@ -545,7 +564,10 @@ showTupleArgs :: a -> [String]
 showTupleArgs = splitTLC . removeOuterParens . showQTerm
 
 removeOuterParens :: String -> String
-removeOuterParens ('(':cs) = reverse . tail $ reverse cs
+removeOuterParens ('(':cs) = init cs
+
+init :: [a] -> [a]
+init = reverse . tail . reverse
 
 -- split at top-level commas
 splitTLC :: String -> [String]
@@ -603,8 +625,29 @@ updStack char stack =
 -- hPutStrLn h s =
 --   do IO.hPutStrLn stderr $ " > " ++ s
 --      IO.hPutStrLn h s
-
+-- 
 -- hGetLine h =
 --   do l <- IO.hGetLine h
 --      IO.hPutStrLn stderr $ "<  " ++ l
 --      return l
+
+-- copied from Database:
+
+--- The type of errors that might occur during a transaction.
+data TError = TError TErrorKind String
+
+--- The various kinds of transaction errors.
+data TErrorKind = KeyNotExistsError
+                | NoRelationshipError
+                | DuplicateKeyError
+                | KeyRequiredError
+                | UniqueError
+                | MinError
+                | MaxError
+                | UserDefinedError
+                | ExecutionError
+
+--- Transforms a transaction error into a string.
+showTError :: TError -> String
+showTError (TError k s) = "Transaction error " ++ show k ++ ": " ++ s
+

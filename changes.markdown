@@ -1,6 +1,14 @@
 Changes in curry-sqlite3
 ========================
 
+0.5
+---
+
+  * added `newDBKeyEntry`
+  * changed `getDBInfo` and `getDBInfos` to yield optional results
+  * added `TError`, `TErrorKind`, and `showTError` rather than
+    importing them from the `Database` module
+
 0.4
 ---
 

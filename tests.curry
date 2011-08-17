@@ -26,14 +26,10 @@ test'allKeyInfosEmpty :: Test
 test'allKeyInfosEmpty = allDBKeyInfos testPred `qYields` []
 
 test'infoEmpty :: Test
-test'infoEmpty =
-  getDBInfo testPred 0
-    `qExitsWith` "ERROR: getDBInfo: no entry for key '0'"
+test'infoEmpty = getDBInfo testPred 0 `qYields` Nothing
 
 test'infosEmpty :: Test
-test'infosEmpty =
-  getDBInfos testPred [0,1,2]
-    `qExitsWith` "ERROR: getDBInfos: no entry for key '0'"
+test'infosEmpty = getDBInfos testPred [0,1,2] `qYields` Nothing
 
 test'deleteKeyEmpty :: Test
 test'deleteKeyEmpty = deleteDBEntry testPred 0 `tYields` ()
@@ -55,7 +51,7 @@ test'createdGoneAfterClean :: Test
 test'createdGoneAfterClean =
   (newDBEntry testPred ("new",42) |>>= \key ->
    cleanDB testPred |>> getDB (getDBInfo testPred key))
-    `tExitsWith` KeyNotExistsError
+     `tYields` Nothing
 
 test'getAllCreatedKeys :: Test
 test'getAllCreatedKeys =
@@ -87,14 +83,14 @@ test'getAllCreatedKeyInfos =
 test'getCreatedInfo :: Test
 test'getCreatedInfo =
   (newDBEntry testPred ("new",42) |>>= getDB . getDBInfo testPred)
-    `tYields` ("new",42)
+    `tYields` Just ("new",42)
 
 test'getCreatedInfos :: Test
 test'getCreatedInfos =
   let infos = [("a",10),("b",20),("c",30)]
    in (mapT (newDBEntry testPred) infos |>>= \keys ->
        getDB (getDBInfos testPred keys))
-        `tYields` infos
+        `tYields` Just infos
 
 test'deleteOneCreated :: Test
 test'deleteOneCreated =
@@ -117,21 +113,21 @@ test'updateCreated =
   (newDBEntry testPred ("old",41) |>>= \key ->
    updateDBEntry testPred key ("new",42) |>>
    getDB (getDBInfo testPred key))
-     `tYields` ("new",42)
+     `tYields` Just ("new",42)
 
 test'queryDeleted :: Test
 test'queryDeleted =
   (newDBEntry testPred ("new",42) |>>= \key ->
    deleteDBEntry testPred key |>>
    getDB (getDBInfo testPred key))
-     `tExitsWith` KeyNotExistsError
+     `tYields` Nothing
 
 test'queryListWithOneDeleted :: Test
 test'queryListWithOneDeleted =
   (mapT (newDBEntry testPred) [("a",10),("b",20),("c",30)] |>>= \keys ->
    deleteDBEntry testPred (keys!!1) |>>
    getDB (getDBInfos testPred keys))
-     `tExitsWith` KeyNotExistsError
+     `tYields` Nothing
 
 test'rollbackOnError :: Test
 test'rollbackOnError = error "message" `tExitsWith` ExecutionError
