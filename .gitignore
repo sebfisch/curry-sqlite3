@@ -2,6 +2,6 @@
 .curry/
 doc
 test.db
+hello.db
 bugs.curry
-hello.curry
 *.db-journal

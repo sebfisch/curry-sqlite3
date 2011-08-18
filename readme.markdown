@@ -51,7 +51,8 @@ The following program shows how to use this library.
     main :: IO ()
     main = do
         let info = "Hello, echo!"
-        res <- runJustT (newDBEntry hello info |>>= getDB . getDBInfo hello)
+        Just res <- runJustT (newDBEntry hello info |>>=
+                                  getDB . getDBInfo hello)
         putStrLn res
         closeDBHandles
 
