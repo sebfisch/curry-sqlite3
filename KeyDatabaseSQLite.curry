@@ -362,8 +362,8 @@ colVals keyPred info =
 
 infoVals :: KeyPred a -> a -> [String]
 infoVals keyPred info
-  | null $ colNames keyPred = [quote $ showQTerm info]
-  | otherwise               = map quote $ showTupleArgs info
+  | null . tail $ colNames keyPred = [quote $ showQTerm info]
+  | otherwise                      = map quote $ showTupleArgs info
 
 quote :: String -> String
 quote s = "'" ++ concatMap quoteChar s ++ "'"
@@ -625,7 +625,7 @@ updStack char stack =
 -- hPutStrLn h s =
 --   do IO.hPutStrLn stderr $ " > " ++ s
 --      IO.hPutStrLn h s
--- 
+
 -- hGetLine h =
 --   do l <- IO.hGetLine h
 --      IO.hPutStrLn stderr $ "<  " ++ l
