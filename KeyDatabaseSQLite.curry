@@ -46,6 +46,8 @@ module KeyDatabaseSQLite (
 
   allDBKeys, allDBInfos, allDBKeyInfos,
 
+  ColVal, (@=), someDBKeys, someDBInfos, someDBKeyInfos,
+
   getDBInfo, getDBInfos,
 
   deleteDBEntry, deleteDBEntries, updateDBEntry, newDBEntry, newDBKeyEntry,
@@ -300,6 +302,37 @@ readKeyInfo row =
  where
   (keyStr,_:infoStr) = break (','==) row
 
+--- Abstract type for value restrictions
+data ColVal = ColVal Int String
+
+--- Constructs a value restriction for the column given as first argument
+(@=) :: Int -> a -> ColVal
+n @= x = ColVal n . quote $ showQTerm x
+
+--- Returns a list of those stored keys where the corresponding info
+--- part matches the gioven value restriction. Safe to use even on
+--- large databases if the number of results is small.
+someDBKeys :: KeyPred _ -> [ColVal] -> Query [Key]
+someDBKeys keyPred cvs = Query $
+  do rows <- selectSomeRows keyPred cvs "_rowid_"
+     mapIO readIntOrExit rows
+
+--- Returns a list of those info parts of stored entries that match
+--- the given value restrictions for columns. Safe to use even on
+--- large databases if the number of results is small.
+someDBInfos :: KeyPred a -> [ColVal] -> Query [a]
+someDBInfos keyPred cvs = Query $
+  do rows <- selectSomeRows keyPred cvs "*"
+     return $!! map readInfo rows
+
+--- Returns a list of those entries that match the given value
+--- restrictions for columns. Safe to use even on large databases if
+--- the number of results is small.
+someDBKeyInfos :: KeyPred a -> [ColVal] -> Query [(Key,a)]
+someDBKeyInfos keyPred cvs = Query $
+  do rows <- selectSomeRows keyPred cvs "_rowid_,*"
+     mapIO readKeyInfo rows
+
 --- Queries the information stored under the given key. Yields
 --- <code>Nothing</code> if the given key is not present.
 getDBInfo :: KeyPred a -> Key -> Query (Maybe a)
@@ -460,6 +493,16 @@ hGetLinesBefore h stop =
        then return []
        else do rest <- hGetLinesBefore h stop
                return (line : rest)
+
+selectSomeRows :: KeyPred _ -> [ColVal] -> String -> IO [Row]
+selectSomeRows keyPred cvs cols =
+  selectRows keyPred cols $ "where " ++ showColVals keyPred cvs
+
+showColVals :: KeyPred a -> [ColVal] -> String
+showColVals _       []     = "1"
+showColVals keyPred (c:vs) = concat . intersperse " AND " $ map showCV (c:vs)
+ where
+  showCV (ColVal n s) = colNames keyPred !! n ++ " = " ++ s
 
 --- Closes all database connections. Should be called when no more
 --- database access will be necessary.
